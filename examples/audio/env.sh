@@ -1,0 +1,1 @@
+PYTHONPATH=/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src:/home/dtarasov/workspace/hse-audio-dalle2/transformers/src

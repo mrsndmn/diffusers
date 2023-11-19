@@ -174,3 +174,8 @@ tags
 .ruff_cache
 
 wandb
+
+*.out
+ddpm-audio-mnist-128
+audio_mnist*
+AudioMNIST

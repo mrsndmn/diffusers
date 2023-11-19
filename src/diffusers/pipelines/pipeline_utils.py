@@ -121,6 +121,11 @@ class ImagePipelineOutput(BaseOutput):
 
 
 @dataclass
+class AudioCodesPipelineOutput(BaseOutput):
+    audio_codes: List[np.ndarray]
+
+
+@dataclass
 class AudioPipelineOutput(BaseOutput):
     """
     Output class for audio pipelines.
