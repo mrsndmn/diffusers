@@ -18,7 +18,7 @@ from transformers import EncodecModel, AutoProcessor, DefaultDataCollator
 from diffusers import UNet1DModel, DDPMScheduler
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
-from diffusers.pipelines.ddpm.pipeline_ddpm import DDPMAudioCodesPipeline
+from diffusers.pipelines.ddpm.pipeline_ddpm import DDPMAudioCodesPipeline, DDPMAudioCodesProbasPipeline
 
 from dataclasses import dataclass
 import torch
@@ -78,7 +78,15 @@ def _process_audio_encodec(encodec_processor, encodec_model, example):
     raw_audio = torch.tensor(example['audio']['array'])
     # print("raw_audio", raw_audio.shape)
     result = encodec_processor(raw_audio=raw_audio, sampling_rate=encodec_processor.sampling_rate, return_tensors="pt")
-    encoder_outputs = encodec_model.encode(result["input_values"], result["padding_mask"])
+    encoder_outputs = encodec_model.encode(result["input_values"].to(encodec_model.device), result["padding_mask"].to(encodec_model.device))
+
+    audio_codes = encoder_outputs.audio_codes
+    audio_codes = audio_codes[0].repeat(1, 1, 10)
+
+    print("audio_codes processed", audio_codes.shape)
+    return {
+        "audio_codes": audio_codes[0, :1, :MAX_AUDIO_CODES_LENGTH],
+    }
 
     precision = 1
     audio_codes = (encoder_outputs.audio_codes / precision).to(dtype=torch.long)
@@ -187,10 +195,12 @@ def train_loop(config, model, encodec_model, noise_scheduler, optimizer, train_d
         progress_bar.set_description(f"Epoch {epoch}")
 
         for step, batch in enumerate(train_dataloader):
-            audio_codes = batch["audio_codes"]
+            audio_codes = batch["audio_codes"] # [ bs, num_channels, sequence_length ]
             # Sample noise to add to the images
-            noise = torch.randn(audio_codes.shape).to(audio_codes.device)
             bs = audio_codes.shape[0]
+            channels = audio_codes.shape[1]
+            assert channels == 1, f'channels != 1: {audio_codes.shape}'
+            seq_len = audio_codes.shape[2]
 
             # Sample a random timestep for each image
             timesteps = torch.randint(
@@ -199,17 +209,32 @@ def train_loop(config, model, encodec_model, noise_scheduler, optimizer, train_d
 
             # Add noise to the clean images according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
-            noisy_audio_codes = noise_scheduler.add_noise(audio_codes, noise, timesteps)
+
+            # >>> torch.zeros([5, 1, 3]).scatter( 2, torch.tensor( [ [ [ 0 ] ], [ [ 1 ] ], [ [ 2 ] ] ] ), torch.ones(5,1,3) )
+            # tensor([[[1., 0., 0.]],
+            #         [[0., 1., 0.]],
+            #         [[0., 0., 1.]],
+            #         [[0., 0., 0.]],
+            #         [[0., 0., 0.]]])
+
+            # todo no hardcode here!
+            audio_codes_probabilities = torch.zeros([ bs, model.config.in_channels, seq_len ], device=audio_codes.device)
+            audio_codes_probabilities.scatter_(1, audio_codes, torch.ones_like(audio_codes_probabilities, device=audio_codes.device))
+
+            noise = torch.randn(audio_codes_probabilities.shape).to(audio_codes_probabilities.device)
+
+            noisy_audio_codes_probabilities = noise_scheduler.add_noise(audio_codes_probabilities, noise, timesteps)
 
             with accelerator.accumulate(model):
                 # Predict the noise residual
-                noise_pred = model(noisy_audio_codes, timesteps, return_dict=False)[0]
+                noise_pred = model(noisy_audio_codes_probabilities, timesteps, return_dict=False)[0]
 
-                print_tensor_statistics("noisy_audio_codes", noisy_audio_codes)
+                print_tensor_statistics("noisy_audio_codes", noisy_audio_codes_probabilities)
                 print_tensor_statistics("audio_codes      ", audio_codes)
                 print_tensor_statistics("noise_pred       ", noise_pred)
                 print_tensor_statistics("noise            ", noise)
 
+                assert noise_pred.shape == noise.shape, f"{noise_pred.shape} == {noise.shape}"
                 loss = F.mse_loss(noise_pred, noise)
                 accelerator.backward(loss)
 
@@ -230,7 +255,7 @@ def train_loop(config, model, encodec_model, noise_scheduler, optimizer, train_d
 
         # After each epoch you optionally sample some demo images with evaluate() and save the model
         if accelerator.is_main_process:
-            pipeline = DDPMAudioCodesPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_scheduler, encodec_model=encodec_model)
+            pipeline = DDPMAudioCodesProbasPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_scheduler, encodec_model=encodec_model)
 
             if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
                 logs_scalars = evaluate(config, epoch, pipeline)
@@ -275,9 +300,9 @@ if __name__ == '__main__':
 
     model = UNet1DModel(
         sample_size=128,  # the target image resolution
-        in_channels=1,
+        in_channels=1024,
         extra_in_channels=16,
-        out_channels=1,
+        out_channels=1024,
         layers_per_block=2,  # how many ResNet layers to use per UNet block
         block_out_channels=(256, 512, 1024),  # the number of output channels for each UNet block
         down_block_types=(

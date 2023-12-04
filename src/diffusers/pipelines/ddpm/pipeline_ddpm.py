@@ -20,6 +20,91 @@ import torch
 from ...utils.torch_utils import randn_tensor
 from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput, AudioCodesPipelineOutput
 
+class DDPMAudioCodesProbasPipeline(DiffusionPipeline):
+    r"""
+    This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
+    library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
+
+    Parameters:
+        unet ([`UNet2DModel`]): U-Net architecture to denoise the encoded image.
+        scheduler ([`SchedulerMixin`]):
+            A scheduler to be used in combination with `unet` to denoise the encoded image. Can be one of
+            [`DDPMScheduler`], or [`DDIMScheduler`].
+    """
+
+    def __init__(self, unet, scheduler, encodec_model):
+        super().__init__()
+        # scheduler = scheduler.set_format("pt")
+        self.register_modules(unet=unet, scheduler=scheduler)
+
+        self.encodec_model = encodec_model
+
+    def denormalize_audio_codes(self, audio_codes_probas):
+        # audio_codes_probas [ bs, codebook_size, seq_len ]
+        audio_codes = audio_codes_probas.max(dim=1).indices
+
+        return audio_codes
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        batch_size: int = 1,
+        generator: Optional[torch.Generator] = None,
+        return_dict: bool = True,
+        **kwargs,
+    ) -> Union[ImagePipelineOutput, Tuple]:
+        r"""
+        Args:
+            batch_size (`int`, *optional*, defaults to 1):
+                The number of images to generate.
+            generator (`torch.Generator`, *optional*):
+                A [torch generator](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make generation
+                deterministic.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~pipeline_utils.ImagePipelineOutput`] instead of a plain tuple.
+
+        Returns:
+            [`~pipeline_utils.ImagePipelineOutput`] or `tuple`: [`~pipelines.utils.ImagePipelineOutput`] if
+            `return_dict` is True, otherwise a `tuple. When returning a tuple, the first element is a list with the
+            generated images.
+        """
+        if "torch_device" in kwargs:
+            device = kwargs.pop("torch_device")
+            warnings.warn(
+                "`torch_device` is deprecated as an input argument to `__call__` and will be removed in v0.3.0."
+                " Consider using `pipe.to(torch_device)` instead."
+            )
+
+            # Set device as before (to be removed in 0.3.0)
+            if device is None:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.to(device)
+
+        # Sample gaussian noise to begin loop
+        audio_codes = torch.randn(
+            (batch_size, self.unet.config.in_channels, self.unet.config.sample_size),
+            generator=generator,
+        )
+        audio_codes = audio_codes.to(self.device)
+
+        # set step values
+        # self.scheduler.set_timesteps(1000)
+
+        for t in self.progress_bar(self.scheduler.timesteps):
+            # 1. predict noise model_output
+            model_output = self.unet(audio_codes, t).sample
+
+            # 2. compute previous audio_codes: x_t -> t_t-1
+            audio_codes = self.scheduler.step(model_output, t, audio_codes, generator=generator).prev_sample
+
+        audio_codes = self.denormalize_audio_codes(audio_codes=audio_codes)
+
+        if not return_dict:
+            return (audio_codes,)
+
+        return AudioCodesPipelineOutput(audio_codes=audio_codes)
+
+
 
 class DDPMAudioCodesPipeline(DiffusionPipeline):
     r"""
