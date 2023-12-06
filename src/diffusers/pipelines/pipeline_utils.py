@@ -49,6 +49,7 @@ from ..utils import (
     get_class_from_dynamic_module,
     is_accelerate_available,
     is_accelerate_version,
+    is_peft_available,
     is_torch_version,
     is_transformers_available,
     logging,
@@ -163,9 +164,9 @@ def is_safetensors_compatible(filenames, variant=None, passed_components=None) -
             continue
 
         if extension == ".bin":
-            pt_filenames.append(filename)
+            pt_filenames.append(os.path.normpath(filename))
         elif extension == ".safetensors":
-            sf_filenames.add(filename)
+            sf_filenames.add(os.path.normpath(filename))
 
     for filename in pt_filenames:
         #  filename = 'foo/bar/baz.bam' -> path = 'foo/bar', filename = 'baz', extention = '.bam'
@@ -177,9 +178,8 @@ def is_safetensors_compatible(filenames, variant=None, passed_components=None) -
         else:
             filename = filename
 
-        expected_sf_filename = os.path.join(path, filename)
+        expected_sf_filename = os.path.normpath(os.path.join(path, filename))
         expected_sf_filename = f"{expected_sf_filename}.safetensors"
-
         if expected_sf_filename not in sf_filenames:
             logger.warning(f"{expected_sf_filename} not found")
             return False
@@ -264,7 +264,7 @@ def warn_deprecated_model_variant(pretrained_model_name_or_path, use_auth_token,
     comp_model_filenames, _ = variant_compatible_siblings(filenames, variant=revision)
     comp_model_filenames = [".".join(f.split(".")[:1] + f.split(".")[2:]) for f in comp_model_filenames]
 
-    if set(comp_model_filenames) == set(model_filenames):
+    if set(model_filenames).issubset(set(comp_model_filenames)):
         warnings.warn(
             f"You are loading the variant {revision} from {pretrained_model_name_or_path} via `revision='{revision}'` even though you can load it via `variant=`{revision}`. Loading model variants via `revision='{revision}'` is deprecated and will be removed in diffusers v1. Please use `variant='{revision}'` instead.",
             FutureWarning,
@@ -274,6 +274,20 @@ def warn_deprecated_model_variant(pretrained_model_name_or_path, use_auth_token,
             f"You are loading the variant {revision} from {pretrained_model_name_or_path} via `revision='{revision}'`. This behavior is deprecated and will be removed in diffusers v1. One should use `variant='{revision}'` instead. However, it appears that {pretrained_model_name_or_path} currently does not have the required variant filenames in the 'main' branch. \n The Diffusers team and community would be very grateful if you could open an issue: https://github.com/huggingface/diffusers/issues/new with the title '{pretrained_model_name_or_path} is missing {revision} files' so that the correct variant file can be added.",
             FutureWarning,
         )
+
+
+def _unwrap_model(model):
+    """Unwraps a model."""
+    if is_compiled_module(model):
+        model = model._orig_mod
+
+    if is_peft_available():
+        from peft import PeftModel
+
+        if isinstance(model, PeftModel):
+            model = model.base_model.model
+
+    return model
 
 
 def maybe_raise_or_warn(
@@ -293,9 +307,8 @@ def maybe_raise_or_warn(
         # Dynamo wraps the original model in a private class.
         # I didn't find a public API to get the original class.
         sub_model = passed_class_obj[name]
-        model_cls = sub_model.__class__
-        if is_compiled_module(sub_model):
-            model_cls = sub_model._orig_mod.__class__
+        unwrapped_sub_model = _unwrap_model(sub_model)
+        model_cls = unwrapped_sub_model.__class__
 
         if not issubclass(model_cls, expected_class_obj):
             raise ValueError(
@@ -534,6 +547,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
         - **_optional_components** (`List[str]`) -- List of all optional components that don't have to be passed to the
           pipeline to function (should be overridden by subclasses).
     """
+
     config_name = "model_index.json"
     model_cpu_offload_seq = None
     _optional_components = []
@@ -548,14 +562,11 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
 
         for name, module in kwargs.items():
             # retrieve library
-            if module is None:
+            if module is None or isinstance(module, (tuple, list)) and module[0] is None:
                 register_dict = {name: (None, None)}
             else:
                 # register the config from the original module, not the dynamo compiled one
-                if is_compiled_module(module):
-                    not_compiled_module = module._orig_mod
-                else:
-                    not_compiled_module = module
+                not_compiled_module = _unwrap_model(module)
 
                 library = not_compiled_module.__module__.split(".")[0]
 
@@ -658,7 +669,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
             # Dynamo wraps the original model in a private class.
             # I didn't find a public API to get the original class.
             if is_compiled_module(sub_model):
-                sub_model = sub_model._orig_mod
+                sub_model = _unwrap_model(sub_model)
                 model_cls = sub_model.__class__
 
             save_method_name = None
@@ -752,10 +763,10 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
 
         torch_dtype = kwargs.pop("torch_dtype", None)
         if torch_dtype is not None:
-            deprecate("torch_dtype", "0.25.0", "")
+            deprecate("torch_dtype", "0.27.0", "")
         torch_device = kwargs.pop("torch_device", None)
         if torch_device is not None:
-            deprecate("torch_device", "0.25.0", "")
+            deprecate("torch_device", "0.27.0", "")
 
         dtype_kwarg = kwargs.pop("dtype", None)
         device_kwarg = kwargs.pop("device", None)
@@ -1682,7 +1693,8 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 if module_candidate is None or not isinstance(module_candidate, str):
                     continue
 
-                candidate_file = os.path.join(component, module_candidate + ".py")
+                # We compute candidate file path on the Hub. Do not use `os.path.join`.
+                candidate_file = f"{component}/{module_candidate}.py"
 
                 if candidate_file in filenames:
                     custom_components[component] = module_candidate
@@ -1779,7 +1791,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 )
             ):
                 raise EnvironmentError(
-                    f"Could not found the necessary `safetensors` weights in {model_filenames} (variant={variant})"
+                    f"Could not find the necessary `safetensors` weights in {model_filenames} (variant={variant})"
                 )
             if from_flax:
                 ignore_patterns = ["*.bin", "*.safetensors", "*.onnx", "*.pb"]
@@ -1900,12 +1912,19 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                     " above."
                 ) from model_info_call_error
 
-    @staticmethod
-    def _get_signature_keys(obj):
+    @classmethod
+    def _get_signature_keys(cls, obj):
         parameters = inspect.signature(obj.__init__).parameters
         required_parameters = {k: v for k, v in parameters.items() if v.default == inspect._empty}
         optional_parameters = set({k for k, v in parameters.items() if v.default != inspect._empty})
         expected_modules = set(required_parameters.keys()) - {"self"}
+
+        optional_names = list(optional_parameters)
+        for name in optional_names:
+            if name in cls._optional_components:
+                expected_modules.add(name)
+                optional_parameters.remove(name)
+
         return expected_modules, optional_parameters
 
     @property
