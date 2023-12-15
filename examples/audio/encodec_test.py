@@ -50,6 +50,10 @@ def test_encodec_shapes():
 
     sample = audio_mnist_dataset_24khz_processed[0]
     audio_codes = sample['audio_codes'][0]
+
+    print("sample", sample)
+    assert 'condition_tokens' in sample, "condition_tokens key is in dataset sample"
+
     # audio_scales = sample['audio_scales'][0]
 
     audio_code = audio_codes.unsqueeze(0).unsqueeze(1).unsqueeze(2)

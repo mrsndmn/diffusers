@@ -15,7 +15,7 @@ import torchaudio
 
 import datasets
 from datasets import Audio, concatenate_datasets
-from transformers import EncodecModel, AutoProcessor, DefaultDataCollator
+from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPTextModel, AutoTokenizer
 from diffusers import VQDiffusionScheduler, Transformer2DModel, VQDiffusionPipeline
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
@@ -44,8 +44,8 @@ class TrainingConfig:
     gradient_accumulation_steps = 1
     learning_rate = 3e-4
     lr_warmup_steps = 100
-    save_image_epochs = 50
-    save_model_epochs = 50
+    save_image_epochs = 10
+    save_model_epochs = 10
     mixed_precision = "no"  # `no` for float32, `fp16` for automatic mixed precision
     output_dir = "ddpm-audio-mnist-128"  # the model name locally and on the HF Hub
 
@@ -56,7 +56,7 @@ class TrainingConfig:
     auxiliary_loss_weight = 5e-4
 
 
-def process_audio_encodec(encodec_processor, encodec_model, examples):
+def process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, examples):
 
     audio_codes_batch = []
     audio_scales_batch = []
@@ -73,10 +73,13 @@ def process_audio_encodec(encodec_processor, encodec_model, examples):
         audio_scales_batch.append( audio_processed['audio_scales'] )
         audio_embeddings_batch.append( audio_processed['audio_embeddings'] )
 
+    # print(examples["label"])
+    clip_processed = clip_tokenizer([ str(label) for label in examples["label"]], padding=True, return_tensors="pt")
     return {
         "audio_codes": audio_codes_batch,
         # "audio_scales": audio_scales_batch,
         "audio_embeddings": audio_embeddings_batch,
+        **clip_processed,
     }
 
 def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, example):
@@ -167,8 +170,9 @@ def print_tensor_statistics(tensor_name, tensor):
 
 def train_loop(
     config: TrainingConfig,
-    model,
-    encodec_model,
+    model: Transformer2DModel,
+    clip_text_model: CLIPTextModel,
+    encodec_model: EncodecModel,
     noise_scheduler: VQDiffusionScheduler,
     optimizer,
     train_dataloader,
@@ -217,6 +221,7 @@ def train_loop(
             print_tensor_statistics("audio_embeddings      ", audio_embeddings)
             print_tensor_statistics("audio_codes           ", audio_codes)
 
+            clip_outputs = clip_text_model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
 
             # Sample a random timestep for each image
             timesteps = torch.randint(
@@ -247,6 +252,7 @@ def train_loop(
 
                 log_x0_reconstructed = model(
                     hidden_states=noisy_audio_codes,
+                    encoder_hidden_states=clip_outputs.last_hidden_state,
                     timestep=timesteps,
                     return_dict=False,
                 )[0]
@@ -358,17 +364,19 @@ if __name__ == '__main__':
     encodec_processor = AutoProcessor.from_pretrained(encodec_model_name)
     print("encodec loaded", datetime.now())
 
+    clip_text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
+    clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
     config = TrainingConfig()
 
     def process_audio(example):
-        return process_audio_encodec(encodec_processor, encodec_model, example)
+        return process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, example)
 
     NUM_VECTORS_IN_CODEBOOK = 1024
 
     print("creating processed dataset", datetime.now())
     # audio_mnist_dataset_24khz_processed = concatenate_datasets([audio_mnist_dataset_24khz.select(range(10))] * NUM_VECTORS_IN_CODEBOOK * 10)
-    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz # .select(range(128))
+    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz.select(range(256))
     audio_mnist_dataset_24khz_processed.set_transform(process_audio)
     print("created processed dataset", datetime.now())
 
@@ -381,7 +389,7 @@ if __name__ == '__main__':
     width = MAX_AUDIO_CODES_LENGTH
     model_kwargs = {
         "attention_bias": True,
-        "cross_attention_dim": None, # no cross attention untill condition is enabled
+        "cross_attention_dim": clip_text_model.config.hidden_size,
         "attention_head_dim": height * width,
         "num_attention_heads": 8,
         "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK,
@@ -415,9 +423,12 @@ if __name__ == '__main__':
     encodec_model = encodec_model.to(device)
     encodec_model.eval()
 
+    clip_text_model = clip_text_model.to(device)
+    clip_text_model.eval()
+
     def count_params(model):
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     print("model params:", count_params(model))
 
-    train_loop(config, model, encodec_model, noise_scheduler, optimizer, train_dataloader, lr_scheduler)
+    train_loop(config, model, clip_text_model, encodec_model, noise_scheduler, optimizer, train_dataloader, lr_scheduler)
