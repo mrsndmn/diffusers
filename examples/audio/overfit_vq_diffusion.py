@@ -34,7 +34,7 @@ from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, mu
 MAX_AUDIO_CODES_LENGTH = 128
 MAX_TRAIN_SAMPLES = 10
 NUM_TRAIN_TIMESTEPS = 100
-
+BANDWIDTH = 3.0
 @dataclass
 class TrainingConfig:
     sample_size = 128  # the generated image resolution
@@ -79,7 +79,7 @@ def process_audio_encodec(encodec_processor, encodec_model, examples):
         "audio_embeddings": audio_embeddings_batch,
     }
 
-def _process_audio_encodec(encodec_processor, encodec_model, example):
+def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, example):
 
     # print("example['audio']['array']", example['audio']['array'])
     raw_audio = torch.tensor(example['audio']['array'])
@@ -88,7 +88,7 @@ def _process_audio_encodec(encodec_processor, encodec_model, example):
     encoder_outputs = encodec_model.encode(
         result["input_values"].to(encodec_model.device),
         result["padding_mask"].to(encodec_model.device),
-        bandwidth=3.0,
+        bandwidth=BANDWIDTH,
     )
 
     audio_codes = encoder_outputs.audio_codes
@@ -136,6 +136,7 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     # The default pipeline output type is `List[PIL.Image]`
     pipeline_out = pipeline(
         num_inference_steps=NUM_TRAIN_TIMESTEPS,
+        bandwidth=BANDWIDTH,
     )
     audio_codes = pipeline_out.audio_codes
     audio_values = pipeline_out.audio_values

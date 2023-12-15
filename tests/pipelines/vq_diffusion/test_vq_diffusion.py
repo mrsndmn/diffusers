@@ -279,9 +279,10 @@ class VQDiffusionPipelineIntegrationTests(unittest.TestCase):
         # don't use GPU generator in tests though
         pipeline_out = pipeline(
             num_inference_steps=100,
+            bandwidth=1.5,
         )
 
-        assert pipeline_out.audio_codes.shape == torch.Size([1, 8])
+        assert pipeline_out.audio_codes.shape == torch.Size([1, 2, 4]) # [ bs, num_encodec_quantizers, sequence length ]
 
         print("pipeline_out.audio_values", pipeline_out.audio_values)
 

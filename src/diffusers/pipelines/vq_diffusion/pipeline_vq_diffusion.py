@@ -15,7 +15,7 @@
 from typing import Callable, List, Optional, Tuple, Union
 
 import torch
-from transformers import CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextModel, CLIPTokenizer, EncodecModel
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...models import ModelMixin, Transformer2DModel, VQModel
@@ -50,7 +50,7 @@ class LearnedClassifierFreeSamplingEmbeddings(ModelMixin, ConfigMixin):
 
 class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
 
-    encodec: VQModel
+    encodec: EncodecModel
     transformer: Transformer2DModel
     scheduler: VQDiffusionScheduler
     # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings
@@ -81,7 +81,10 @@ class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
         latents: Optional[torch.FloatTensor] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
+        bandwidth=None,
     ) -> Union[ImagePipelineOutput, Tuple]:
+
+        assert bandwidth is not None, "bandwidth must be setup"
 
         batch_size = num_generated_audios
 
@@ -141,9 +144,16 @@ class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
         print("sample.shape", sample.shape)
 
         audio_codes = sample
+        num_quantizers = self.encodec.quantizer.get_num_quantizers_for_bandwidth(bandwidth=bandwidth)
+        # assert num_quantizers == 4, "temporary test assert"
+
+        audio_codes = audio_codes.reshape(audio_codes.shape[0], -1, num_quantizers)
+        audio_codes = audio_codes.permute(0, 2, 1)
+        print("audio_codes reshaped", audio_codes.shape)
+
         all_audio_values = []
         for audio_code_i in range(audio_codes.shape[0]):
-            audio_code = audio_codes[audio_code_i].unsqueeze(0).unsqueeze(1).unsqueeze(2)
+            audio_code = audio_codes[audio_code_i].unsqueeze(0).unsqueeze(1)
 
             print("audio_codes", audio_code.shape)
 
