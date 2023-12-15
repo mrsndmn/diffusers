@@ -104,8 +104,6 @@ class DDPMAudioCodesProbasPipeline(DiffusionPipeline):
 
         return AudioCodesPipelineOutput(audio_codes=audio_codes)
 
-
-
 class DDPMAudioCodesPipeline(DiffusionPipeline):
     r"""
     This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
@@ -191,6 +189,97 @@ class DDPMAudioCodesPipeline(DiffusionPipeline):
             return (audio_codes,)
 
         return AudioCodesPipelineOutput(audio_codes=audio_codes)
+
+class DDPMEncodecCodebookPipeline(DiffusionPipeline):
+    r"""
+    This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
+    library implements for all the pipelines (such as downloading or saving, running on a particular device, etc.)
+
+    Parameters:
+        unet ([`UNet2DModel`]): U-Net architecture to denoise the encoded image.
+        scheduler ([`SchedulerMixin`]):
+            A scheduler to be used in combination with `unet` to denoise the encoded image. Can be one of
+            [`DDPMScheduler`], or [`DDIMScheduler`].
+    """
+
+    def __init__(self, unet, scheduler, encodec_model):
+        super().__init__()
+        # scheduler = scheduler.set_format("pt")
+        self.register_modules(unet=unet, scheduler=scheduler, encodec_model=encodec_model)
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        batch_size: int = 1,
+        generator: Optional[torch.Generator] = None,
+        return_dict: bool = True,
+        **kwargs,
+    ) -> Union[AudioCodesPipelineOutput, Tuple]:
+        r"""
+        Args:
+            batch_size (`int`, *optional*, defaults to 1):
+                The number of images to generate.
+            generator (`torch.Generator`, *optional*):
+                A [torch generator](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make generation
+                deterministic.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~pipeline_utils.ImagePipelineOutput`] instead of a plain tuple.
+
+        Returns:
+            [`~pipeline_utils.ImagePipelineOutput`] or `tuple`: [`~pipelines.utils.ImagePipelineOutput`] if
+            `return_dict` is True, otherwise a `tuple. When returning a tuple, the first element is a list with the
+            generated images.
+        """
+        if "torch_device" in kwargs:
+            device = kwargs.pop("torch_device")
+            warnings.warn(
+                "`torch_device` is deprecated as an input argument to `__call__` and will be removed in v0.3.0."
+                " Consider using `pipe.to(torch_device)` instead."
+            )
+
+            # Set device as before (to be removed in 0.3.0)
+            if device is None:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.to(device)
+        # Sample gaussian noise to begin loop
+        seq_len = self.unet.config.sample_size
+        encodec_codebook_embeddings = torch.randn(
+            (batch_size, self.unet.config.in_channels, seq_len),
+            generator=generator,
+        )
+        encodec_codebook_embeddings = encodec_codebook_embeddings.to(self.device)
+
+        # set step values
+        # self.scheduler.set_timesteps(1000)
+
+        for t in self.progress_bar(self.scheduler.timesteps):
+            # 1. predict noise model_output
+            model_output = self.unet(encodec_codebook_embeddings, t).sample
+
+            # 2. compute previous encodec_codebook_embeddings: x_t -> t_t-1
+            encodec_codebook_embeddings = self.scheduler.step(model_output, t, encodec_codebook_embeddings, generator=generator).prev_sample
+
+
+        codebook_size = self.encodec_model.config.codebook_size
+        # [ bs, codebook_size, channels, seq_len ]
+        encodec_codebook_embeddings_distances = encodec_codebook_embeddings.unsqueeze(1).repeat_interleave(codebook_size, dim=1)
+
+        # [ bs, codebook_size, channels, seq_len ]
+        codebook_buffered = self.encodec_model.quantizer.layers[0].codebook.embed.unsqueeze(0).unsqueeze(-1).repeat(batch_size, 1, 1, seq_len)
+
+        assert encodec_codebook_embeddings_distances.shape == codebook_buffered.shape, f"{encodec_codebook_embeddings_distances.shape} == {codebook_buffered.shape}"
+
+        # [ bs, codebook_size, seq_len ]
+        encodec_codebook_embeddings_distances = torch.linalg.vector_norm(encodec_codebook_embeddings_distances - codebook_buffered, dim=2)
+
+        # [ bs, seq_len ]
+        audio_codes = encodec_codebook_embeddings_distances.max(dim=1).indices
+
+        if not return_dict:
+            return (audio_codes,)
+
+        return AudioCodesPipelineOutput(audio_codes=audio_codes)
+
 
 class DDPMPipeline(DiffusionPipeline):
     r"""

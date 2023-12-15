@@ -20,8 +20,9 @@ import numpy as np
 import torch
 from transformers import CLIPTextConfig, CLIPTextModel, CLIPTokenizer
 
+from transformers import EncodecModel
 from diffusers import Transformer2DModel, VQDiffusionPipeline, VQDiffusionScheduler, VQModel
-from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import LearnedClassifierFreeSamplingEmbeddings
+from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import LearnedClassifierFreeSamplingEmbeddings, VQDiffusionAudioUnconditionalPipeline
 from diffusers.utils.testing_utils import load_numpy, nightly, require_torch_gpu, torch_device
 
 
@@ -225,3 +226,62 @@ class VQDiffusionPipelineIntegrationTests(unittest.TestCase):
 
         assert image.shape == (256, 256, 3)
         assert np.abs(expected_image - image).max() < 2.0
+
+
+class VQDiffusionPipelineIntegrationTests(unittest.TestCase):
+    def tearDown(self):
+        # clean up the VRAM after each test
+        super().tearDown()
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    def test_vq_diffusion_audio_unconditional_pipeline(self):
+        encodec_model_name = "facebook/encodec_24khz"
+
+        encodec_model = EncodecModel.from_pretrained(encodec_model_name)
+
+        print("chunk_length", encodec_model.config.chunk_length)
+
+        NUM_VECTORS_IN_CODEBOOK = 1024
+        NUM_TRAIN_TIMESTEPS = 100
+        height = 8
+        width = 8
+
+        model_kwargs = {
+            "attention_bias": True,
+            "cross_attention_dim": None, # no cross attention untill condition is enabled
+            "attention_head_dim": height * width,
+            "num_attention_heads": 1,
+            "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK,
+            "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
+            "norm_num_groups": 32,
+            "sample_size": width,
+            "num_layers": 1,
+            "activation_fn": "geglu-approximate",
+        }
+
+        transformer_model = Transformer2DModel(**model_kwargs)
+
+        noise_scheduler = VQDiffusionScheduler(
+            num_vec_classes=NUM_VECTORS_IN_CODEBOOK,
+            num_train_timesteps=NUM_TRAIN_TIMESTEPS,
+        )
+
+        pipeline = VQDiffusionAudioUnconditionalPipeline(
+            encodec=encodec_model,
+            transformer=transformer_model,
+            scheduler=noise_scheduler,
+        )
+        pipeline = pipeline.to(torch_device)
+        pipeline.set_progress_bar_config(disable=None)
+
+        # requires GPU generator for gumbel softmax
+        # don't use GPU generator in tests though
+        pipeline_out = pipeline(
+            num_inference_steps=100,
+        )
+
+        assert pipeline_out.audio_codes.shape == torch.Size([1, 8])
+
+        print("pipeline_out.audio_values", pipeline_out.audio_values)
+

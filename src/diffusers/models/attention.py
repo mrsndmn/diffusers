@@ -257,7 +257,14 @@ class BasicTransformerBlock(nn.Module):
         # 0. Self-Attention
         batch_size = hidden_states.shape[0]
 
+        # print("self.use_ada_layer_norm", self.use_ada_layer_norm)
+        # print("self.use_ada_layer_norm_zero", self.use_ada_layer_norm_zero)
+        # print("self.use_layer_norm", self.use_layer_norm)
+        # print("self.use_ada_layer_norm_single", self.use_ada_layer_norm_single)
         if self.use_ada_layer_norm:
+            # print("hidden_states", hidden_states.shape, "timestep", timestep.shape)
+            # print("timestep", timestep)
+            # print("block self", self)
             norm_hidden_states = self.norm1(hidden_states, timestep)
         elif self.use_ada_layer_norm_zero:
             norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
@@ -319,6 +326,9 @@ class BasicTransformerBlock(nn.Module):
 
             if self.pos_embed is not None and self.use_ada_layer_norm_single is False:
                 norm_hidden_states = self.pos_embed(norm_hidden_states)
+
+            # print("self.attn2", self.attn2)
+            # print("norm_hidden_states", norm_hidden_states.shape)
 
             attn_output = self.attn2(
                 norm_hidden_states,

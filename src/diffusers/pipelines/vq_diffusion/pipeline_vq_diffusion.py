@@ -21,7 +21,7 @@ from ...configuration_utils import ConfigMixin, register_to_config
 from ...models import ModelMixin, Transformer2DModel, VQModel
 from ...schedulers import VQDiffusionScheduler
 from ...utils import logging
-from ..pipeline_utils import DiffusionPipeline, ImagePipelineOutput
+from ..pipeline_utils import AudioCodesPipelineOutput, DiffusionPipeline, ImagePipelineOutput
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -47,6 +47,136 @@ class LearnedClassifierFreeSamplingEmbeddings(ModelMixin, ConfigMixin):
             embeddings = None
 
         self.embeddings = torch.nn.Parameter(embeddings)
+
+class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
+
+    encodec: VQModel
+    transformer: Transformer2DModel
+    scheduler: VQDiffusionScheduler
+    # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings
+
+    def __init__(
+        self,
+        encodec: VQModel,
+        transformer: Transformer2DModel,
+        scheduler: VQDiffusionScheduler,
+        # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings,
+    ):
+        super().__init__()
+
+        self.register_modules(
+            encodec=encodec,
+            transformer=transformer,
+            scheduler=scheduler,
+            # learned_classifier_free_sampling_embeddings=learned_classifier_free_sampling_embeddings,
+        )
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        num_inference_steps: int = 100,
+        truncation_rate: float = 1.0,
+        num_generated_audios: int = 1,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.FloatTensor] = None,
+        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback_steps: int = 1,
+    ) -> Union[ImagePipelineOutput, Tuple]:
+
+        batch_size = num_generated_audios
+
+        if (callback_steps is None) or (
+            callback_steps is not None and (not isinstance(callback_steps, int) or callback_steps <= 0)
+        ):
+            raise ValueError(
+                f"`callback_steps` has to be a positive integer but is {callback_steps} of type"
+                f" {type(callback_steps)}."
+            )
+
+        # get the initial completely masked latents unless the user supplied it
+
+        latents_shape = (batch_size, self.transformer.width)
+        if latents is None:
+            mask_class = self.transformer.num_vector_embeds - 1
+            latents = torch.full(latents_shape, mask_class).to(self.device)
+        else:
+            if latents.shape != latents_shape:
+                raise ValueError(f"Unexpected latents shape, got {latents.shape}, expected {latents_shape}")
+            if (latents < 0).any() or (latents >= self.transformer.num_vector_embeds).any():
+                raise ValueError(
+                    "Unexpected latents value(s). All latents be valid embedding indices i.e. in the range 0,"
+                    f" {self.transformer.num_vector_embeds - 1} (inclusive)."
+                )
+            latents = latents.to(self.device)
+
+        # set timesteps
+        self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+
+        timesteps_tensor = self.scheduler.timesteps.to(self.device)
+
+        sample = latents
+
+        for i, t in enumerate(self.progress_bar(timesteps_tensor)):
+            # expand the sample if we are doing classifier free guidance
+            latent_model_input = sample
+
+            # predict the un-noised image
+            # model_output == `log_p_x_0`
+            model_output = self.transformer(latent_model_input, timestep=t).sample
+            print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
+
+            model_output = self.truncate(model_output, truncation_rate)
+
+            # remove `log(0)`'s (`-inf`s)
+            model_output = model_output.clamp(-70)
+
+            # compute the previous noisy sample x_t -> x_t-1
+            sample = self.scheduler.step(model_output, timestep=t, sample=sample, generator=generator).prev_sample
+            print("sample.shape", sample.shape)
+
+            # call the callback, if provided
+            if callback is not None and i % callback_steps == 0:
+                callback(i, t, sample)
+
+        print("sample.shape", sample.shape)
+
+        audio_codes = sample
+        all_audio_values = []
+        for audio_code_i in range(audio_codes.shape[0]):
+            audio_code = audio_codes[audio_code_i].unsqueeze(0).unsqueeze(1).unsqueeze(2)
+
+            print("audio_codes", audio_code.shape)
+
+            padding_mask = None
+            audio_values = self.encodec.decode(audio_code, [None], padding_mask, return_dict=True).audio_values
+
+            all_audio_values.append(audio_values)
+        all_audio_values = torch.cat(all_audio_values, dim=0)
+
+        return AudioCodesPipelineOutput(audio_codes=audio_codes, audio_values=all_audio_values)
+
+    def truncate(self, log_p_x_0: torch.FloatTensor, truncation_rate: float) -> torch.FloatTensor:
+        """
+        Truncates `log_p_x_0` such that for each column vector, the total cumulative probability is `truncation_rate`
+        The lowest probabilities that would increase the cumulative probability above `truncation_rate` are set to
+        zero.
+        """
+        sorted_log_p_x_0, indices = torch.sort(log_p_x_0, 1, descending=True)
+        sorted_p_x_0 = torch.exp(sorted_log_p_x_0)
+        keep_mask = sorted_p_x_0.cumsum(dim=1) < truncation_rate
+
+        # Ensure that at least the largest probability is not zeroed out
+        all_true = torch.full_like(keep_mask[:, 0:1, :], True)
+        keep_mask = torch.cat((all_true, keep_mask), dim=1)
+        keep_mask = keep_mask[:, :-1, :]
+
+        keep_mask = keep_mask.gather(1, indices.argsort(1))
+
+        rv = log_p_x_0.clone()
+
+        rv[~keep_mask] = -torch.inf  # -inf = log(0)
+
+        return rv
 
 
 class VQDiffusionPipeline(DiffusionPipeline):
@@ -267,6 +397,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
             # predict the un-noised image
             # model_output == `log_p_x_0`
             model_output = self.transformer(latent_model_input, encoder_hidden_states=prompt_embeds, timestep=t).sample
+            print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
 
             if do_classifier_free_guidance:
                 model_output_uncond, model_output_text = model_output.chunk(2)

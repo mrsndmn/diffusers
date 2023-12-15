@@ -55,7 +55,7 @@ def index_to_log_onehot(x: torch.LongTensor, num_classes: int) -> torch.FloatTen
     """
     x_onehot = F.one_hot(x, num_classes)
     x_onehot = x_onehot.permute(0, 2, 1)
-    log_x = torch.log(x_onehot.float().clamp(min=1e-30))
+    log_x = torch.log(x_onehot.float().clamp(min=1e-30)).to(x.device)
     return log_x
 
 
@@ -102,6 +102,25 @@ def gamma_schedules(num_diffusion_timesteps: int, gamma_cum_start=0.000009, gamm
     ctt = np.concatenate((ctt[1:], [0]))
     return ct, ctt
 
+def log_add_exp(a, b):
+    maximum = torch.max(a, b)
+    return maximum + torch.log(torch.exp(a - maximum) + torch.exp(b - maximum))
+
+def extract(a, t, x_shape):
+    b, *_ = t.shape
+    out = a.gather(-1, t)
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+
+def log_1_min_a(a):
+    return torch.log(1 - a.exp() + 1e-40)
+
+
+def multinomial_kl(log_prob1, log_prob2):   # compute KL loss on log_prob
+    kl = (log_prob1.exp() * (log_prob1 - log_prob2)).sum(dim=1)
+    return kl
+
+def log_categorical(log_x_start, log_prob):
+    return (log_x_start.exp() * log_prob).sum(dim=1)
 
 class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
     """
@@ -137,6 +156,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         alpha_cum_end: float = 0.000009,
         gamma_cum_start: float = 0.000009,
         gamma_cum_end: float = 0.99999,
+        device='cpu',
     ):
         self.num_embed = num_vec_classes
 
@@ -164,16 +184,20 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_cumprod_bt = torch.log(btt)
         log_cumprod_ct = torch.log(ctt)
 
-        self.log_at = log_at.float()
-        self.log_bt = log_bt.float()
-        self.log_ct = log_ct.float()
-        self.log_cumprod_at = log_cumprod_at.float()
-        self.log_cumprod_bt = log_cumprod_bt.float()
-        self.log_cumprod_ct = log_cumprod_ct.float()
+        self.log_at = log_at.float().to(device)
+        self.log_bt = log_bt.float().to(device)
+        self.log_ct = log_ct.float().to(device)
+        self.log_cumprod_at = log_cumprod_at.float().to(device)
+        self.log_cumprod_bt = log_cumprod_bt.float().to(device)
+        self.log_cumprod_ct = log_cumprod_ct.float().to(device)
+
+        self.log_1_min_ct = log_1_min_a(self.log_ct).to(device)
+        self.log_1_min_cumprod_ct = log_1_min_a(self.log_cumprod_ct).to(device)
 
         # setable values
         self.num_inference_steps = None
-        self.timesteps = torch.from_numpy(np.arange(0, num_train_timesteps)[::-1].copy())
+        self.num_train_timesteps = num_train_timesteps
+        self.timesteps = torch.from_numpy(np.arange(0, num_train_timesteps)[::-1].copy()).to(device)
 
     def set_timesteps(self, num_inference_steps: int, device: Union[str, torch.device] = None):
         """
@@ -196,6 +220,47 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         self.log_cumprod_at = self.log_cumprod_at.to(device)
         self.log_cumprod_bt = self.log_cumprod_bt.to(device)
         self.log_cumprod_ct = self.log_cumprod_ct.to(device)
+
+        self.log_1_min_ct = log_1_min_a(self.log_ct)
+        self.log_1_min_cumprod_ct = log_1_min_a(self.log_cumprod_ct)
+
+    def add_noise(
+        self,
+        log_one_hot_x_0_probas: torch.LongTensor, # (`torch.LongTensor` of shape `(batch size, num_classes, num latent pixels)`):
+        timesteps: torch.IntTensor, # [ batch_size ]
+    ) -> torch.FloatTensor:
+
+        assert timesteps.shape[0] == log_one_hot_x_0_probas.shape[0], 'timestemps batch size doesnt match to sample batch size'
+
+        # def q_sample(self, log_x_start, t):                 # diffusion step, q(xt|x0) and sample xt
+        #
+        # log_x_start can be onehot or not
+
+        print("self.log_cumprod_at", self.log_cumprod_at.shape, self.log_cumprod_at.device)
+        log_cumprod_at = extract(self.log_cumprod_at, timesteps, log_one_hot_x_0_probas.shape)         # at~
+        log_cumprod_bt = extract(self.log_cumprod_bt, timesteps, log_one_hot_x_0_probas.shape)         # bt~
+        log_cumprod_ct = extract(self.log_cumprod_ct, timesteps, log_one_hot_x_0_probas.shape)         # ct~
+        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, timesteps, log_one_hot_x_0_probas.shape)       # 1-ct~
+
+        log_one_hot_x_0_probas_at = log_one_hot_x_0_probas[:,:-1,:]+log_cumprod_at
+        log_one_hot_x_0_probas_ct = log_one_hot_x_0_probas[:,-1:,:]+log_1_min_cumprod_ct
+
+        log_probs = torch.cat(
+            [
+                log_add_exp(log_one_hot_x_0_probas_at, log_cumprod_bt),
+                log_add_exp(log_one_hot_x_0_probas_ct, log_cumprod_ct)
+            ],
+            dim=1
+        )
+
+        uniform = torch.rand_like(log_probs)
+        gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
+        sample = (gumbel_noise + log_probs).argmax(dim=1)
+
+        assert sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
+
+        return sample
+
 
     def step(
         self,
@@ -242,12 +307,48 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return VQDiffusionSchedulerOutput(prev_sample=x_t_min_1)
 
-    def q_posterior(self, log_p_x_0, x_t, t):
+    def q_pred(self, log_x_start, t):           # q(xt|x0)
+        # log_x_start can be onehot or not
+        t = (t + (self.num_train_timesteps + 1))%(self.num_train_timesteps + 1)
+        log_cumprod_at = extract(self.log_cumprod_at, t, log_x_start.shape)         # at~
+        log_cumprod_bt = extract(self.log_cumprod_bt, t, log_x_start.shape)         # bt~
+        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_x_start.shape)         # ct~
+        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, t, log_x_start.shape)       # 1-ct~
+
+        log_probs = torch.cat(
+            [
+                log_add_exp(log_x_start[:,:-1,:]+log_cumprod_at, log_cumprod_bt),
+                log_add_exp(log_x_start[:,-1:,:]+log_1_min_cumprod_ct, log_cumprod_ct)
+            ],
+            dim=1
+        )
+
+        return log_probs
+
+    def q_pred_one_timestep(self, log_x_t, t):         # q(xt|xt_1)
+        log_at = extract(self.log_at, t, log_x_t.shape)             # at
+        log_bt = extract(self.log_bt, t, log_x_t.shape)             # bt
+        log_ct = extract(self.log_ct, t, log_x_t.shape)             # ct
+        log_1_min_ct = extract(self.log_1_min_ct, t, log_x_t.shape)          # 1-ct
+
+        log_probs = torch.cat(
+            [
+                log_add_exp(log_x_t[:,:-1,:]+log_at, log_bt),
+                log_add_exp(log_x_t[:, -1:, :] + log_1_min_ct, log_ct)
+            ],
+            dim=1
+        )
+
+        return log_probs
+
+
+
+    def q_posterior_new(self, log_p_x_0, x_t, t):
         """
         Calculates the log probabilities for the predicted classes of the image at timestep `t-1`:
 
         ```
-        p(x_{t-1} | x_t) = sum( q(x_t | x_{t-1}) * q(x_{t-1} | x_0) * p(x_0) / q(x_t | x_0) )
+        p(x_{t-1} | x_t) = sum( q(x_t | x_{t-1}) * q(x_{t-1} | x_0) * p(x_0 | x_t) / q(x_t | x_0) )
         ```
 
         Args:
@@ -263,15 +364,82 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             `torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`:
                 The log probabilities for the predicted classes of the image at timestep `t-1`.
         """
+
+        assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps, 'timesteps are ok'
+
         log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
+
+        batch_size = log_p_x_0.size()[0]
+        mask = (x_t == self.num_embed-1).unsqueeze(1)
+
+        log_one_vector = torch.zeros(batch_size, 1, 1).type_as(log_onehot_x_t)
+        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, x_t.shape[-1])
+
+        log_qt = self.q_pred(log_onehot_x_t, t)                                  # q(xt|x0)
+
+        log_qt = log_qt[:,:-1,:]
+
+        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_p_x_0.shape)         # ct~
+        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
+        # ct_cumprod_vector = torch.cat((ct_cumprod_vector, log_one_vector), dim=1)
+        log_qt = (~mask)*log_qt + mask*ct_cumprod_vector
+
+        log_qt_one_timestep = self.q_pred_one_timestep(log_onehot_x_t, t)        # q(xt|xt_1)
+        log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)
+        log_ct = extract(self.log_ct, t, log_p_x_0.shape)         # ct
+        ct_vector = log_ct.expand(-1, self.num_embed-1, -1)
+        ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
+        log_qt_one_timestep = (~mask)*log_qt_one_timestep + mask*ct_vector
+
+        # log_x_start = torch.cat((log_x_start, log_zero_vector), dim=1)
+        # q = log_x_start - log_qt
+        q = log_p_x_0[:,:-1,:] - log_qt
+        q = torch.cat((q, log_zero_vector), dim=1)
+        q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
+        q = q - q_log_sum_exp
+        log_EV_xtmin_given_xt_given_xstart = self.q_pred(q, t-1) + log_qt_one_timestep + q_log_sum_exp
+        return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
+
+    def q_posterior(self, log_p_x_0, x_t, t):
+        """
+        Calculates the log probabilities for the predicted classes of the image at timestep `t-1`:
+
+        ```
+        p(x_{t-1} | x_t) = sum( q(x_t | x_{t-1}) * q(x_{t-1} | x_0) * p(x_0 | x_t) / q(x_t | x_0) )
+        ```
+
+        Args:
+            log_p_x_0 (`torch.FloatTensor` of shape `(batch size, num classes - 1, num latent pixels)`):
+                The log probabilities for the predicted classes of the initial latent pixels. Does not include a
+                prediction for the masked class as the initial unnoised image cannot be masked.
+            x_t (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
+                The classes of each latent pixel at time `t`.
+            t (`torch.Long`):
+                The timestep that determines which transition matrix is used.
+
+        Returns:
+            `torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`:
+                The log probabilities for the predicted classes of the image at timestep `t-1`.
+        """
+
+        assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps, 'timesteps are ok'
+
+        log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
+
+        assert log_p_x_0.shape[1] == self.num_embed - 1, f'q_posterior log_p_x_0.shape[1] expected to be equal to {self.num_embed - 1}, but got shape {log_p_x_0.shape}'
+
+        def print_tensor_statistics(tensor_name, tensor):
+            print(f"{tensor_name} [{tensor.shape}] [{tensor.device}]: min={tensor.min():.4f}, max={tensor.max():.4f}, median={tensor.median():.4f}, mean={tensor.float().mean():.4f}")
 
         log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(
             t=t, x_t=x_t, log_onehot_x_t=log_onehot_x_t, cumulative=True
         )
+        print_tensor_statistics("log_q_x_t_given_x_0", log_q_x_t_given_x_0)
 
-        log_q_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(
+        log_q_x_t_given_x_t_min_1 = self.log_Q_t_transitioning_to_known_class(
             t=t, x_t=x_t, log_onehot_x_t=log_onehot_x_t, cumulative=False
         )
+        print_tensor_statistics("log_q_x_t_given_x_t_min_1", log_q_x_t_given_x_t_min_1)
 
         # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0)          ...      p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0)
         #               .                    .                                   .
@@ -283,6 +451,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # sum_0 = p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}), ... ,
         # sum_n = p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) + ... + p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1})
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
+        print_tensor_statistics("q_log_sum_exp", q_log_sum_exp)
 
         # p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0          ...      p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n
         #                        .                             .                                   .
@@ -298,6 +467,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # (p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_cumulative_{t-1} + b_cumulative_{t-1}  ...      (p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_cumulative_{t-1} + b_cumulative_{t-1}
         # c_cumulative_{t-1}                                                                                 ...      c_cumulative_{t-1}
         q = self.apply_cumulative_transitions(q, t - 1)
+        print_tensor_statistics("q apply_cumulative_transitions", q)
 
         # ((p_0(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_0) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_0              ...      ((p_n(x_0=C_0 | x_t) / q(x_t | x_0=C_0) / sum_n) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_0) * sum_n
         #                                                            .                                                                 .                                              .
@@ -305,7 +475,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #                                                            .                                                                                   .                            .
         # ((p_0(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_0) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_0  ...      ((p_n(x_0=C_{k-1} | x_t) / q(x_t | x_0=C_{k-1}) / sum_n) * a_cumulative_{t-1} + b_cumulative_{t-1}) * q(x_t | x_{t-1}=C_{k-1}) * sum_n
         # c_cumulative_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0                                                                                       ...      c_cumulative_{t-1} * q(x_t | x_{t-1}=C_k) * sum_0
-        log_p_x_t_min_1 = q + log_q_t_given_x_t_min_1 + q_log_sum_exp
+        log_p_x_t_min_1 = q + log_q_x_t_given_x_t_min_1 + q_log_sum_exp
 
         # For each column, there are two possible cases.
         #
@@ -351,7 +521,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # 0
         #
         # The last row is trivially verified. The other rows can be verified by directly expanding equation (11) stated in terms of forward probabilities.
-        return log_p_x_t_min_1
+        return torch.clamp(log_p_x_t_min_1, -70, 0)
 
     def log_Q_t_transitioning_to_known_class(
         self, *, t: torch.int, x_t: torch.LongTensor, log_onehot_x_t: torch.FloatTensor, cumulative: bool
@@ -376,7 +546,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
                 Each _column_ of the returned matrix is a _row_ of log probabilities of the complete probability
                 transition matrix.
 
-                When non cumulative, returns `self.num_classes - 1` rows because the initial latent pixel cannot be
+                # When cumulative, returns `self.num_classes - 1` rows because the initial latent pixel cannot be
                 masked.
 
                 Where:
@@ -402,6 +572,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
                 q_0_cumulative(x_t | x_0 = C_{k-1}) ... q_n_cumulative(x_t | x_0 = C_{k-1})
                 ```
         """
+
+        assert log_onehot_x_t.shape[1] == self.num_embed, f'log_Q_t_transitioning_to_known_class: log_onehot_x_t shape[1] expected to be = {self.num_embed}, but got shape {log_onehot_x_t.shape}'
+
         if cumulative:
             a = self.log_cumprod_at[t]
             b = self.log_cumprod_bt[t]
@@ -410,6 +583,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
             a = self.log_at[t]
             b = self.log_bt[t]
             c = self.log_ct[t]
+
+        if len(t.shape) > 0:
+            a = a.unsqueeze(1).unsqueeze(2)
+            b = b.unsqueeze(1).unsqueeze(2)
+            c = c.unsqueeze(1).unsqueeze(2)
 
         if not cumulative:
             # The values in the onehot vector can also be used as the logprobs for transitioning
@@ -440,12 +618,24 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # `0 * a + b = b` where `log_Q_t` has the 0 values in the column.
         #
         # See equation 7 for more details.
+        print("log_onehot_x_t", log_onehot_x_t.shape)
+        # print("a", a.shape)
+        # print("b", b.shape)
         log_Q_t = (log_onehot_x_t + a).logaddexp(b)
 
         # The whole column of each masked pixel is `c`
         mask_class_mask = x_t == self.mask_class
         mask_class_mask = mask_class_mask.unsqueeze(1).expand(-1, self.num_embed - 1, -1)
-        log_Q_t[mask_class_mask] = c
+
+        # print("c", c.shape)
+        # print("mask_class_mask", mask_class_mask.shape)
+
+        if len(c.shape) > 0:
+            c_mask = c.repeat(1, mask_class_mask.shape[1], mask_class_mask.shape[2])
+            # print("c_mask", c_mask.shape)
+            log_Q_t.masked_scatter_(mask_class_mask, c_mask)
+        else:
+            log_Q_t[mask_class_mask] = c
 
         if not cumulative:
             log_Q_t = torch.cat((log_Q_t, log_onehot_x_t_transitioning_from_masked), dim=1)
@@ -459,7 +649,14 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         c = self.log_cumprod_ct[t]
 
         num_latent_pixels = q.shape[2]
-        c = c.expand(bsz, 1, num_latent_pixels)
+        if len(t.shape) > 0:
+            a = a.unsqueeze(1).unsqueeze(2)
+            b = b.unsqueeze(1).unsqueeze(2)
+
+            c = c.unsqueeze(1).unsqueeze(2)
+            c = c.repeat(1, 1, num_latent_pixels)
+        else:
+            c = c.expand(bsz, 1, num_latent_pixels)
 
         q = (q + a).logaddexp(b)
         q = torch.cat((q, c), dim=1)
