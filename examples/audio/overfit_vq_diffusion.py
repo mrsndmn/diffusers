@@ -31,10 +31,10 @@ import os
 from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical
 
 
-MAX_AUDIO_CODES_LENGTH = 128
+MAX_AUDIO_CODES_LENGTH = 256
 MAX_TRAIN_SAMPLES = 10
 NUM_TRAIN_TIMESTEPS = 100
-BANDWIDTH = 3.0
+BANDWIDTH = 1.5
 @dataclass
 class TrainingConfig:
     sample_size = 128  # the generated image resolution
@@ -99,7 +99,7 @@ def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, examp
     audio_codes = audio_codes[0].permute(0, 2, 1)
     audio_codes = audio_codes.reshape(audio_codes.shape[0], -1)
     audio_codes = audio_codes.unsqueeze(1)
-    audio_codes = audio_codes.repeat(1, 1, 5)
+    audio_codes = audio_codes.repeat(1, 1, 20)
     # print("2 audio_codes.shape", audio_codes.shape)
     audio_codes = audio_codes[0, :, :MAX_AUDIO_CODES_LENGTH]
     # print("3 audio_codes.shape", audio_codes.shape)
@@ -137,9 +137,12 @@ def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, examp
 def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
+    text_condition = [ str(x) for x in range(10) ]
     pipeline_out = pipeline(
         num_inference_steps=NUM_TRAIN_TIMESTEPS,
         bandwidth=BANDWIDTH,
+        num_generated_audios = 10,
+        text_condition=text_condition,
     )
     audio_codes = pipeline_out.audio_codes
     audio_values = pipeline_out.audio_values
@@ -151,8 +154,9 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     os.makedirs(test_dir, exist_ok=True)
 
     for i in range(audio_values.shape[0]):
+        current_text_condition = text_condition[i]
         audio_wave = audio_values[i]
-        torchaudio.save(f"{test_dir}/{epoch}_{i}.wav", audio_wave.to('cpu'), sample_rate=24000)
+        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=24000)
 
     print(f"evaluate for epoch {epoch} done")
 
@@ -171,6 +175,7 @@ def print_tensor_statistics(tensor_name, tensor):
 def train_loop(
     config: TrainingConfig,
     model: Transformer2DModel,
+    clip_tokenizer: AutoTokenizer,
     clip_text_model: CLIPTextModel,
     encodec_model: EncodecModel,
     noise_scheduler: VQDiffusionScheduler,
@@ -318,9 +323,12 @@ def train_loop(
 
             base_logs["params/lr"]        =  lr_scheduler.get_last_lr()[0]
             base_logs["params/step"]      =  global_step
+
             progress_bar.set_postfix(**base_logs)
 
             logs.update(base_logs)
+
+            logs["system/gpu_memory_allocated"] = torch.cuda.memory_allocated()
 
             accelerator.log(logs, step=global_step)
             global_step += 1
@@ -332,6 +340,8 @@ def train_loop(
             if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
                 pipeline = VQDiffusionAudioUnconditionalPipeline(
                     encodec=encodec_model,
+                    clip_tokenizer=clip_tokenizer,
+                    clip_text_model=clip_text_model,
                     transformer=unwrapped_model,
                     scheduler=noise_scheduler,
                 )
@@ -391,12 +401,12 @@ if __name__ == '__main__':
         "attention_bias": True,
         "cross_attention_dim": clip_text_model.config.hidden_size,
         "attention_head_dim": height * width,
-        "num_attention_heads": 8,
-        "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK,
+        "num_attention_heads": 4,
+        "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK + 1,
         "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
         "norm_num_groups": 32,
         "sample_size": width,
-        "num_layers": 8,
+        "num_layers": 2,
         "activation_fn": "geglu-approximate",
     }
 
@@ -406,7 +416,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     noise_scheduler = VQDiffusionScheduler(
-        num_vec_classes=NUM_VECTORS_IN_CODEBOOK,
+        num_vec_classes=model_kwargs['num_vector_embeds'],
         num_train_timesteps=NUM_TRAIN_TIMESTEPS,
         device=device,
     )
@@ -431,4 +441,4 @@ if __name__ == '__main__':
 
     print("model params:", count_params(model))
 
-    train_loop(config, model, clip_text_model, encodec_model, noise_scheduler, optimizer, train_dataloader, lr_scheduler)
+    train_loop(config, model, clip_tokenizer, clip_text_model, encodec_model, noise_scheduler, optimizer, train_dataloader, lr_scheduler)

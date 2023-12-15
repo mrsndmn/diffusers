@@ -15,7 +15,7 @@
 from typing import Callable, List, Optional, Tuple, Union
 
 import torch
-from transformers import CLIPTextModel, CLIPTokenizer, EncodecModel
+from transformers import CLIPTextModel, CLIPTokenizer, EncodecModel, AutoTokenizer
 
 from ...configuration_utils import ConfigMixin, register_to_config
 from ...models import ModelMixin, Transformer2DModel, VQModel
@@ -51,6 +51,8 @@ class LearnedClassifierFreeSamplingEmbeddings(ModelMixin, ConfigMixin):
 class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
 
     encodec: EncodecModel
+    clip_tokenizer: AutoTokenizer
+    clip_text_model: CLIPTextModel
     transformer: Transformer2DModel
     scheduler: VQDiffusionScheduler
     # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings
@@ -58,6 +60,8 @@ class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
     def __init__(
         self,
         encodec: VQModel,
+        clip_tokenizer: AutoTokenizer,
+        clip_text_model: CLIPTextModel,
         transformer: Transformer2DModel,
         scheduler: VQDiffusionScheduler,
         # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings,
@@ -66,6 +70,8 @@ class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
 
         self.register_modules(
             encodec=encodec,
+            clip_tokenizer=clip_tokenizer,
+            clip_text_model=clip_text_model,
             transformer=transformer,
             scheduler=scheduler,
             # learned_classifier_free_sampling_embeddings=learned_classifier_free_sampling_embeddings,
@@ -79,6 +85,7 @@ class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
         num_generated_audios: int = 1,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
+        text_condition: Optional[List[str]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
         bandwidth=None,
@@ -119,13 +126,27 @@ class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
 
         sample = latents
 
+        encoder_hidden_states = None
+        if text_condition is not None:
+            clip_inputs = self.clip_tokenizer(text_condition, padding=True, return_tensors="pt")
+            clip_input_ids = clip_inputs['input_ids'].to(self.clip_text_model.device)
+            clip_attention_mask = clip_inputs['attention_mask'].to(self.clip_text_model.device)
+            clip_outputs = self.clip_text_model(input_ids=clip_input_ids, attention_mask=clip_attention_mask)
+            encoder_hidden_states = clip_outputs.last_hidden_state
+
+        assert encoder_hidden_states.shape[0] == sample.shape[0], "batch dim of sample and of text condition does't match"
+
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # expand the sample if we are doing classifier free guidance
             latent_model_input = sample
 
             # predict the un-noised image
             # model_output == `log_p_x_0`
-            model_output = self.transformer(latent_model_input, timestep=t).sample
+            model_output = self.transformer(
+                hidden_states=latent_model_input,
+                encoder_hidden_states=encoder_hidden_states,
+                timestep=t,
+            ).sample
             print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
 
             model_output = self.truncate(model_output, truncation_rate)
