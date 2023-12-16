@@ -34,16 +34,16 @@ from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, mu
 MAX_AUDIO_CODES_LENGTH = 256
 MAX_TRAIN_SAMPLES = 10
 NUM_TRAIN_TIMESTEPS = 100
-BANDWIDTH = 1.5
+BANDWIDTH = 3.0
 @dataclass
 class TrainingConfig:
-    sample_size = 128  # the generated image resolution
-    train_batch_size = 64
+    sample_size = MAX_AUDIO_CODES_LENGTH  # the generated image resolution
+    train_batch_size = 16
     eval_batch_size = 16  # how many images to sample during evaluation
     num_epochs = 10000
     gradient_accumulation_steps = 1
     learning_rate = 3e-4
-    lr_warmup_steps = 100
+    lr_warmup_steps = 1000
     save_image_epochs = 10
     save_model_epochs = 10
     mixed_precision = "no"  # `no` for float32, `fp16` for automatic mixed precision
@@ -53,7 +53,7 @@ class TrainingConfig:
     hub_private_repo = False
     overwrite_output_dir = True  # overwrite the old model when re-running the notebook
     seed = 0
-    auxiliary_loss_weight = 5e-4
+    auxiliary_loss_weight = 0.01
 
 
 def process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, examples):
@@ -278,7 +278,8 @@ def train_loop(
                 kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
                 print_tensor_statistics("kl_loss       ", kl_loss)
 
-                kl_loss_mean_pixels = kl_loss.mean(dim=-1)
+                kl_loss_sum_pixels = kl_loss.mean(dim=-1)
+                print_tensor_statistics("kl_loss_sum_pixels ", kl_loss_sum_pixels)
 
                 # L_{0}
                 decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_model_prob_x_t_min_1)
@@ -288,18 +289,18 @@ def train_loop(
                 decoder_x0_nll[non_zero_timesteps] = 0
                 print_tensor_statistics("decoder_nll ", decoder_x0_nll)
 
-                non_zero_timesteps = ~non_zero_timesteps
-                kl_loss_mean_pixels[non_zero_timesteps] = 0
-                print_tensor_statistics("kl_loss_mean_pixels ", kl_loss_mean_pixels)
-                result_loss = (kl_loss_mean_pixels + decoder_x0_nll).mean()
+                zero_timesteps = ~non_zero_timesteps
+                kl_loss_sum_pixels[zero_timesteps] = 0
+                print_tensor_statistics("kl_loss_sum_pixels zeroed zero t ", kl_loss_sum_pixels)
+                result_loss = (kl_loss_sum_pixels + decoder_x0_nll).mean()
 
                 if config.auxiliary_loss_weight > 0:
                     log_one_hot_audio_codes_no_mask = log_one_hot_audio_codes[:, :-1, :]
                     log_x0_reconstructed_no_mask = log_x0_reconstructed[:,:-1,:]
                     assert log_one_hot_audio_codes_no_mask.shape == log_x0_reconstructed_no_mask.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_no_mask.shape} != {log_x0_reconstructed_no_mask.shape}"
                     kl_aux = multinomial_kl(log_one_hot_audio_codes_no_mask, log_x0_reconstructed_no_mask)
-                    kl_aux = kl_aux.sum(dim=-1)
-                    print_tensor_statistics("kl_loss_mean_pixels ", kl_loss_mean_pixels)
+                    kl_aux = kl_aux.mean(dim=-1)
+                    print_tensor_statistics("kl_aux ", kl_aux)
                     kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
 
                     result_loss += kl_aux
@@ -316,7 +317,7 @@ def train_loop(
 
             base_logs = {}
             base_logs["loss/loss"]        =  result_loss.detach().item()
-            base_logs["loss/kl_loss"]     =  kl_loss_mean_pixels.mean().detach().item()
+            base_logs["loss/kl_loss"]     =  kl_loss_sum_pixels.mean().detach().item()
             base_logs["loss/decoder_nll"] =  decoder_x0_nll.mean().detach().item()
             if config.auxiliary_loss_weight > 0:
                 base_logs["loss/kl_aux"] = kl_aux.detach().item()
@@ -386,7 +387,7 @@ if __name__ == '__main__':
 
     print("creating processed dataset", datetime.now())
     # audio_mnist_dataset_24khz_processed = concatenate_datasets([audio_mnist_dataset_24khz.select(range(10))] * NUM_VECTORS_IN_CODEBOOK * 10)
-    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz.select(range(256))
+    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz.select(range(1024))
     audio_mnist_dataset_24khz_processed.set_transform(process_audio)
     print("created processed dataset", datetime.now())
 
@@ -395,18 +396,18 @@ if __name__ == '__main__':
     print("audio_mnist_dataset_24khz_processed", len(audio_mnist_dataset_24khz_processed))
     train_dataloader = torch.utils.data.DataLoader(audio_mnist_dataset_24khz_processed, collate_fn=collator, batch_size=config.train_batch_size, shuffle=True)
 
-    height = 2
+    height = 1
     width = MAX_AUDIO_CODES_LENGTH
     model_kwargs = {
         "attention_bias": True,
         "cross_attention_dim": clip_text_model.config.hidden_size,
         "attention_head_dim": height * width,
-        "num_attention_heads": 4,
+        "num_attention_heads": 8,
         "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK + 1,
         "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
         "norm_num_groups": 32,
         "sample_size": width,
-        "num_layers": 2,
+        "num_layers": 6,
         "activation_fn": "geglu-approximate",
     }
 
