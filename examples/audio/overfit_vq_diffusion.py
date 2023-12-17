@@ -1,6 +1,7 @@
 import sys
 
 import torch
+import torch.nn.functional as F
 
 from datetime import datetime
 print("torch.cuda.is_available()", torch.cuda.is_available())
@@ -28,6 +29,8 @@ from accelerate import Accelerator
 from tqdm.auto import tqdm
 import os
 
+from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
+
 from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical
 
 
@@ -35,14 +38,16 @@ MAX_AUDIO_CODES_LENGTH = 256
 MAX_TRAIN_SAMPLES = 10
 NUM_TRAIN_TIMESTEPS = 100
 BANDWIDTH = 3.0
+SAMPLE_RATE = 24000
+
 @dataclass
 class TrainingConfig:
     sample_size = MAX_AUDIO_CODES_LENGTH  # the generated image resolution
-    train_batch_size = 16
+    train_batch_size = 32
     eval_batch_size = 16  # how many images to sample during evaluation
     num_epochs = 10000
     gradient_accumulation_steps = 1
-    learning_rate = 3e-4
+    learning_rate = 1e-4
     lr_warmup_steps = 1000
     save_image_epochs = 10
     save_model_epochs = 10
@@ -137,7 +142,8 @@ def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, examp
 def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
-    text_condition = [ str(x) for x in range(10) ]
+    condition_classes = list(range(10))
+    text_condition = [ str(x) for x in condition_classes ]
     pipeline_out = pipeline(
         num_inference_steps=NUM_TRAIN_TIMESTEPS,
         bandwidth=BANDWIDTH,
@@ -147,7 +153,7 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     audio_codes = pipeline_out.audio_codes
     audio_values = pipeline_out.audio_values
     print("audio_codes.shape", audio_codes.shape)
-    print("audio_values.shape", audio_values.shape)
+    print("audio_values.shape", audio_values.shape) # [bs, n_channels, waveform_length]
 
     # Save the images
     test_dir = os.path.join(config.output_dir, "samples")
@@ -156,7 +162,38 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     for i in range(audio_values.shape[0]):
         current_text_condition = text_condition[i]
         audio_wave = audio_values[i]
-        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=24000)
+        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
+
+    audio_mnist_state_dict = torch.load("audio_mnist_classifier.pth", map_location='cpu')
+    audio_mnist_classifier = AudioMNISTModel()
+    audio_mnist_classifier.load_state_dict(audio_mnist_state_dict)
+    audio_mnist_classifier.to(audio_values.device)
+
+    audio_values_spectrograms = []
+    new_sample_rate = 8000
+    resampler = torchaudio.transforms.Resample(orig_freq=SAMPLE_RATE, new_freq=new_sample_rate).to(audio_values.device)
+    for i in range(audio_values.shape[0]):
+        current_text_condition = text_condition[i]
+        current_waveform = audio_values[i]
+        resmpled_current_waveform = resampler(current_waveform)
+        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}_for_classifier.wav", resmpled_current_waveform.to('cpu'), sample_rate=new_sample_rate)
+
+        resmpled_current_waveform_np = resmpled_current_waveform[0].cpu().numpy()
+        spectrogram_t = torch.tensor(get_spectrogram(resmpled_current_waveform_np, sample_rate=new_sample_rate), device=audio_values.device)
+        audio_values_spectrograms.append(spectrogram_t.float())
+
+    audio_values_spectrograms = torch.cat(audio_values_spectrograms, dim=0)
+    audio_values_spectrograms = audio_values_spectrograms.unsqueeze(1)
+    print("audio_values_spectrograms.shape", audio_values_spectrograms.shape)
+
+    classiier_logits = audio_mnist_classifier(audio_values_spectrograms)
+    classiier_probas = F.softmax(classiier_logits, dim=-1)
+    classiier_classes = classiier_probas.max(dim=-1).indices
+    print("classiier_classes", classiier_classes)
+
+    eval_classifier_accuracy = (classiier_classes == torch.tensor(condition_classes, device=classiier_classes.device)).float().mean().item()
+
+    # todo make evaluation of audio mnist classifier with labels
 
     print(f"evaluate for epoch {epoch} done")
 
@@ -165,6 +202,7 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
         "eval_codes/max":    audio_codes.max(),
         "eval_codes/median": audio_codes.median(),
         "eval_codes/mean":   audio_codes.float().mean(),
+        "eval_classifier/accuracy": eval_classifier_accuracy,
     }
     # image_grid.save()
 
@@ -363,7 +401,7 @@ if __name__ == '__main__':
     print("loading dataset", datetime.now())
     audio_mnist_dataset = datasets.load_from_disk("./audio_mnist_full")
 
-    audio_mnist_dataset_24khz = audio_mnist_dataset.cast_column("audio", Audio(sampling_rate=24000))
+    audio_mnist_dataset_24khz = audio_mnist_dataset.cast_column("audio", Audio(sampling_rate=SAMPLE_RATE))
     print("loaded and casted dataset", datetime.now())
 
 
@@ -387,7 +425,7 @@ if __name__ == '__main__':
 
     print("creating processed dataset", datetime.now())
     # audio_mnist_dataset_24khz_processed = concatenate_datasets([audio_mnist_dataset_24khz.select(range(10))] * NUM_VECTORS_IN_CODEBOOK * 10)
-    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz.select(range(1024))
+    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz.select(range(512))
     audio_mnist_dataset_24khz_processed.set_transform(process_audio)
     print("created processed dataset", datetime.now())
 

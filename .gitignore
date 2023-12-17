@@ -178,7 +178,10 @@ wandb
 
 *.out
 ddpm-audio-mnist-128
-audio_mnist*
+**/audio_mnist/*
+**/audio_mnist_full/*
 AudioMNIST
 # wandb
 wandb
+
+*.pth
