@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from diffusers import VQDiffusionScheduler
+from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot
 
 from .test_schedulers import SchedulerCommonTest
 
@@ -103,4 +104,65 @@ class VQDiffusionSchedulerTest(SchedulerCommonTest):
 
         return
 
+    def test_q_forward(self):
+
+        for scheduler_class in self.scheduler_classes:
+            scheduler_config = self.get_scheduler_config()
+            scheduler = scheduler_class(**scheduler_config)
+            scheduler.set_timesteps(100)
+
+            # [ batch_size, num classes, num pixels ]
+            log_one_hot_x_0_probas = self.dummy_sample_probas(scheduler.num_embed)
+            batch_size = log_one_hot_x_0_probas.shape[0]
+            num_latent_codes = log_one_hot_x_0_probas.shape[-1]
+
+            x_0 = torch.randint(0, scheduler.num_embed - 1, size=[batch_size, num_latent_codes])
+            log_one_hot_x_0 = index_to_log_onehot(x_0, scheduler.num_embed)
+
+            timesteps = scheduler.timesteps[:batch_size*25:25]
+            print("log_one_hot_x_0_probas", log_one_hot_x_0_probas.shape)
+            print("x_0", x_0.shape)
+            print("t", timesteps.shape)
+
+            log_q_x_t_given_x_0 = scheduler.q_forward(log_one_hot_x_0, timesteps)
+            x_t = scheduler.q_sample(log_q_x_t_given_x_0)
+
+            print("t  ", timesteps)
+            print("x_0", x_0)
+            print("x_t", x_t)
+
+        return
+
+    def test_q_posterior_paper(self):
+
+        for scheduler_class in self.scheduler_classes:
+            scheduler_config = self.get_scheduler_config()
+            scheduler = scheduler_class(**scheduler_config)
+            scheduler.set_timesteps(100)
+
+            # [ batch_size, num classes, num pixels ]
+            log_one_hot_x_0_probas = self.dummy_sample_probas(scheduler.num_embed)
+            batch_size = log_one_hot_x_0_probas.shape[0]
+            num_latent_codes = log_one_hot_x_0_probas.shape[-1]
+
+            x_0 = torch.randint(0, scheduler.num_embed - 1, size=[batch_size, num_latent_codes])
+            log_one_hot_x_0 = index_to_log_onehot(x_0, scheduler.num_embed)
+
+            timesteps = scheduler.timesteps[:batch_size*25:25]
+            print("log_one_hot_x_0_probas", log_one_hot_x_0_probas.shape)
+            print("x_0", x_0.shape)
+            print("t", timesteps.shape)
+
+            log_q_x_t_given_x_0 = scheduler.q_forward(log_one_hot_x_0, timesteps)
+            x_t = scheduler.q_sample(log_q_x_t_given_x_0)
+
+            scheduler.q_posterior_from_paper(log_one_hot_x_0, x_t)
+
+            print("t  ", timesteps)
+            print("x_0", x_0)
+            print("x_t", x_t)
+
+
+
+        return
 

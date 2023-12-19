@@ -13,7 +13,6 @@ sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/transformers/src')
 import os
 import torchaudio
 
-
 import datasets
 from datasets import Audio, concatenate_datasets
 from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPTextModel, AutoTokenizer
@@ -48,9 +47,9 @@ class TrainingConfig:
     num_epochs = 10000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
-    lr_warmup_steps = 1000
-    save_image_epochs = 10
-    save_model_epochs = 10
+    lr_warmup_steps = 2000
+    save_image_epochs = 2
+    save_model_epochs = 2
     mixed_precision = "no"  # `no` for float32, `fp16` for automatic mixed precision
     output_dir = "ddpm-audio-mnist-128"  # the model name locally and on the HF Hub
 
@@ -118,26 +117,6 @@ def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, examp
         "audio_embeddings": audio_embeddings
     }
 
-    precision = 1
-    audio_codes = (encoder_outputs.audio_codes / precision).to(dtype=torch.long)
-    codebook_size = encodec_model.config.codebook_size / precision
-
-    audio_codes_norm = (audio_codes * 2 / codebook_size) - 1
-    audio_codes_norm = audio_codes_norm[0].repeat(1, 1, 10)
-
-    assert audio_codes_norm.shape[-1] > MAX_AUDIO_CODES_LENGTH
-
-    # padding_length = MAX_AUDIO_CODES_LENGTH - encoder_outputs.audio_codes.shape[-1]
-    # assert padding_length > 0, f"padding_length={padding_length}, encoder_outputs.audio_codes.shape[-1]={encoder_outputs.audio_codes.shape[-1]}"
-    # print("padding_length", padding_length)
-
-    return {
-        # **result,
-        # "padding_mask": result['padding_mask'][0],
-        "audio_codes": audio_codes_norm[0, :1, :MAX_AUDIO_CODES_LENGTH],
-        # "input_values": result["input_values"][0],
-    }
-
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     # Sample some images from random noise (this is the backward diffusion process).
@@ -162,7 +141,7 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
     for i in range(audio_values.shape[0]):
         current_text_condition = text_condition[i]
         audio_wave = audio_values[i]
-        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
+        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}_orig_q.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
 
     audio_mnist_state_dict = torch.load("audio_mnist_classifier.pth", map_location='cpu')
     audio_mnist_classifier = AudioMNISTModel()
@@ -227,7 +206,9 @@ def train_loop(
         gradient_accumulation_steps=config.gradient_accumulation_steps,
         log_with="tensorboard",
         project_dir=os.path.join(config.output_dir, "logs"),
+        # device_placement=False,
     )
+
     if accelerator.is_main_process:
         if config.push_to_hub:
             raise Exception("push_to_hub option is not supported")
@@ -249,6 +230,9 @@ def train_loop(
     for epoch in range(config.num_epochs):
         progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
+
+
+        masked_tokens_counts = []
 
         for step, batch in enumerate(train_dataloader):
             audio_codes = batch["audio_codes"] # [ bs, num_channels, sequence_length ]
@@ -305,12 +289,12 @@ def train_loop(
 
                 print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
-                log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_new(log_p_x_0=log_x0_reconstructed, x_t=noisy_audio_codes, t=timesteps)
+                log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(log_p_x_0=log_x0_reconstructed, x_t=noisy_audio_codes, t=timesteps)
 
                 print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
 
                 # log_p_x_0 = log_one_hot_audio_codes[:, :-1, :]
-                log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_new(log_p_x_0=log_one_hot_audio_codes, x_t=noisy_audio_codes, t=timesteps)
+                log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(log_p_x_0=log_one_hot_audio_codes, x_t=noisy_audio_codes, t=timesteps)
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
 
                 kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
@@ -331,6 +315,10 @@ def train_loop(
                 kl_loss_sum_pixels[zero_timesteps] = 0
                 print_tensor_statistics("kl_loss_sum_pixels zeroed zero t ", kl_loss_sum_pixels)
                 result_loss = (kl_loss_sum_pixels + decoder_x0_nll).mean()
+
+                masked_tokens_count = (noisy_audio_codes == noise_scheduler.mask_class).sum().detach().cpu().item()
+                print("masked_tokens_count", masked_tokens_count)
+                masked_tokens_counts.append(masked_tokens_count)
 
                 if config.auxiliary_loss_weight > 0:
                     log_one_hot_audio_codes_no_mask = log_one_hot_audio_codes[:, :-1, :]
@@ -366,6 +354,8 @@ def train_loop(
             progress_bar.set_postfix(**base_logs)
 
             logs.update(base_logs)
+
+            logs['metrics/mean_masked_tokens_count'] = torch.tensor(masked_tokens_counts).float().mean().detach().cpu().item()
 
             logs["system/gpu_memory_allocated"] = torch.cuda.memory_allocated()
 
@@ -425,7 +415,7 @@ if __name__ == '__main__':
 
     print("creating processed dataset", datetime.now())
     # audio_mnist_dataset_24khz_processed = concatenate_datasets([audio_mnist_dataset_24khz.select(range(10))] * NUM_VECTORS_IN_CODEBOOK * 10)
-    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz.select(range(512))
+    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz # .select(range(512))
     audio_mnist_dataset_24khz_processed.set_transform(process_audio)
     print("created processed dataset", datetime.now())
 
@@ -445,7 +435,7 @@ if __name__ == '__main__':
         "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
         "norm_num_groups": 32,
         "sample_size": width,
-        "num_layers": 6,
+        "num_layers": 3,
         "activation_fn": "geglu-approximate",
     }
 
@@ -453,6 +443,7 @@ if __name__ == '__main__':
     assert model.is_input_continuous == False, 'transformer is discrete'
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # device = 'cpu'
 
     noise_scheduler = VQDiffusionScheduler(
         num_vec_classes=model_kwargs['num_vector_embeds'],
