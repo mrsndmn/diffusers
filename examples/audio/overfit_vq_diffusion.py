@@ -19,7 +19,7 @@ from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPT
 from diffusers import VQDiffusionScheduler, Transformer2DModel, VQDiffusionPipeline
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
-from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioUnconditionalPipeline
+from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioTextConditionalPipeline
 
 from dataclasses import dataclass
 import torch
@@ -32,7 +32,7 @@ from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
 
 from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical
 
-
+NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
 MAX_TRAIN_SAMPLES = 10
 NUM_TRAIN_TIMESTEPS = 100
@@ -47,7 +47,7 @@ class TrainingConfig:
     num_epochs = 10000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
-    lr_warmup_steps = 2000
+    lr_warmup_steps = 3000
     save_image_epochs = 2
     save_model_epochs = 2
     mixed_precision = "no"  # `no` for float32, `fp16` for automatic mixed precision
@@ -118,7 +118,7 @@ def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, examp
     }
 
 @torch.no_grad()
-def evaluate(config, epoch, pipeline: VQDiffusionAudioUnconditionalPipeline):
+def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
     condition_classes = list(range(10))
@@ -289,12 +289,12 @@ def train_loop(
 
                 print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
-                log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(log_p_x_0=log_x0_reconstructed, x_t=noisy_audio_codes, t=timesteps)
+                log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_only(log_p_x_0=log_x0_reconstructed, x_t=noisy_audio_codes, t=timesteps)
 
                 print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
 
                 # log_p_x_0 = log_one_hot_audio_codes[:, :-1, :]
-                log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(log_p_x_0=log_one_hot_audio_codes, x_t=noisy_audio_codes, t=timesteps)
+                log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_only(log_p_x_0=log_one_hot_audio_codes, x_t=noisy_audio_codes, t=timesteps)
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
 
                 kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
@@ -367,7 +367,7 @@ def train_loop(
             unwrapped_model = accelerator.unwrap_model(model)
 
             if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-                pipeline = VQDiffusionAudioUnconditionalPipeline(
+                pipeline = VQDiffusionAudioTextConditionalPipeline(
                     encodec=encodec_model,
                     clip_tokenizer=clip_tokenizer,
                     clip_text_model=clip_text_model,
@@ -411,7 +411,6 @@ if __name__ == '__main__':
     def process_audio(example):
         return process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, example)
 
-    NUM_VECTORS_IN_CODEBOOK = 1024
 
     print("creating processed dataset", datetime.now())
     # audio_mnist_dataset_24khz_processed = concatenate_datasets([audio_mnist_dataset_24khz.select(range(10))] * NUM_VECTORS_IN_CODEBOOK * 10)

@@ -36,6 +36,7 @@ class VQDiffusionSchedulerOutput(BaseOutput):
     """
 
     prev_sample: torch.LongTensor
+    prev_sample_log_probas: torch.LongTensor
 
 
 def index_to_log_onehot(x: torch.LongTensor, num_classes: int) -> torch.FloatTensor:
@@ -59,11 +60,14 @@ def index_to_log_onehot(x: torch.LongTensor, num_classes: int) -> torch.FloatTen
     return log_x
 
 
-def gumbel_noised(logits: torch.FloatTensor, generator: Optional[torch.Generator]) -> torch.FloatTensor:
+def gumbel_noised(logits: torch.FloatTensor, uniform_noise=None, generator: Optional[torch.Generator]=None) -> torch.FloatTensor:
     """
     Apply gumbel noise to `logits`
     """
-    uniform = torch.rand(logits.shape, device=logits.device, generator=generator)
+    if uniform_noise is None:
+        uniform = torch.rand(logits.shape, device=logits.device, generator=generator)
+    else:
+        uniform = uniform_noise
     gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
     noised = gumbel_noise + logits
     return noised
@@ -289,11 +293,9 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return log_probs
 
-    def q_sample(self, log_probs):
+    def q_sample(self, log_probs, uniform_noise=None):
 
-        uniform = torch.rand_like(log_probs)
-        gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
-        noisy_log_probs = gumbel_noise + log_probs
+        noisy_log_probs = gumbel_noised(log_probs, uniform_noise=uniform_noise)
         sample = noisy_log_probs.argmax(dim=1)
 
         return sample
@@ -318,7 +320,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         return sample
 
-
     def step(
         self,
         model_output: torch.FloatTensor,
@@ -326,6 +327,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         sample: torch.LongTensor,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
+        use_oracle_q_posterior = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by the reverse transition distribution. See
@@ -350,10 +352,16 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
                 If return_dict is `True`, [`~schedulers.scheduling_vq_diffusion.VQDiffusionSchedulerOutput`] is
                 returned, otherwise a tuple is returned where the first element is the sample tensor.
         """
+
+        timestep_t = torch.tensor([timestep], dtype=torch.long, device=model_output.device)
+
         if timestep == 0:
             log_p_x_t_min_1 = model_output
         else:
-            log_p_x_t_min_1 = self.q_posterior(model_output, sample, timestep)
+            if use_oracle_q_posterior:
+                log_p_x_t_min_1 = self.q_posterior_only(model_output, sample, timestep_t)
+            else:
+                log_p_x_t_min_1 = self.q_posterior(model_output, sample, timestep_t)
 
         log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1, generator)
 
@@ -362,59 +370,57 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         if not return_dict:
             return (x_t_min_1,)
 
-        return VQDiffusionSchedulerOutput(prev_sample=x_t_min_1)
+        return VQDiffusionSchedulerOutput(prev_sample=x_t_min_1, prev_sample_log_probas=log_p_x_t_min_1)
 
-    def q_posterior_only(self, log_p_x_0, x_t, t):
+    def q_posterior_only(
+            self,
+            log_p_x_0,
+            x_t,
+            t,
+            uniform_noise_x_t_given_x_0=None,
+            uniform_noise_x_t_minus_1_given_x_0=None,
+        ):
         """
-        Calculates the log probabilities for the predicted classes of the image at timestep `t-1`:
-
-        ```
-        p(x_{t-1} | x_t) = sum( q(x_t | x_{t-1}, x_0) * q(x_{t-1} | x_0) * p(x_0 | x_t) / q(x_t | x_0) )
-        ```
-
-        Args:
-            log_p_x_0 (`torch.FloatTensor` of shape `(batch size, num classes - 1, num latent pixels)`):
-                The log probabilities for the predicted classes of the initial latent pixels.
-            x_t (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
-                The classes of each latent pixel at time `t`.
-            t (`torch.Long`):
-                The timestep that determines which transition matrix is used.
-
-        Returns:
-            `torch.FloatTensor` of shape `(batch size, num classes, num latent pixels)`:
-                The log probabilities for the predicted classes of the image at timestep `t-1`.
+        q(x_{t-1} | x_t, x_0) = q(x_t | x_{t-1}, x_0) * q(x_{t-1} | x_0) / q(x_t | x_0)
         """
 
         assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps, 'timesteps are ok'
 
-        log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
+        # log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
 
-        batch_size = log_p_x_0.size()[0]
+        # batch_size = log_p_x_0.size()[0]
 
         # boolean mask for masked tokens `M`
         # mask_tokens = (x_t == self.mask_class).unsqueeze(1)
         # non_mask_tokens = ~mask_tokens
 
-        log_one_vector = torch.zeros(batch_size, 1, 1).type_as(log_onehot_x_t)
-        log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, x_t.shape[-1])
+        # log_one_vector = torch.zeros(batch_size, 1, 1).type_as(log_onehot_x_t)
+        # log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, x_t.shape[-1])
 
         # calculated x_t
-        log_qt = self.q_forward(log_p_x_0, t) # q(x_t|x_0)
+        log_q_x_t_given_x_0 = self.q_forward(log_p_x_0, t) # q(x_t|x_0)
+        log_q_x_t_given_x_0 = gumbel_noised(log_q_x_t_given_x_0, uniform_noise=uniform_noise_x_t_given_x_0)
+
+        # x_t_given_x_0 = self.q_sample(log_q_x_t_given_x_0)
+
+        # assert (x_t == x_t_given_x_0).all(), 'x_t sampling is ok'
 
         # todo rem block?
-        log_qt = log_qt[:,:-1,:]
+        # log_qt = log_qt[:,:-1,:]
         # oveeride probability for masked tokens `M`
         # log_cumprod_ct = extract(self.log_cumprod_ct, t, log_p_x_0.shape) # ct~
         # ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
         # # ct_cumprod_vector = torch.cat((ct_cumprod_vector, log_one_vector), dim=1)
         # log_qt = non_mask_tokens*log_qt + mask_tokens*ct_cumprod_vector
 
-        log_q_x_t_minus_1 = self.q_forward(log_p_x_0, t-1) # q(x_{t-1}|x_0)
-        x_t_minus_1 = self.q_sample(log_q_x_t_minus_1)
-        log_onehot_x_t_minus_1 = index_to_log_onehot(x_t_minus_1, self.num_embed)
+        log_q_x_t_minus_1_given_x_0 = self.q_forward(log_p_x_0, t-1) # q(x_{t-1}|x_0)
+        log_q_x_t_minus_1_given_x_0 = gumbel_noised(log_q_x_t_minus_1_given_x_0, uniform_noise=uniform_noise_x_t_minus_1_given_x_0)
+        x_t_minus_1_given_x_0 = log_q_x_t_minus_1_given_x_0.argmax(dim=1)
+
+        log_onehot_x_t_minus_1_given_x_0 = index_to_log_onehot(x_t_minus_1_given_x_0, self.num_embed)
 
         # for t=0 masking will be made later, here wi will ignore it
-        log_qt_one_timestep = self.q_forward_one_timestep(log_onehot_x_t_minus_1, t-1)  # q(x_t|x{t-1})
+        log_q_x_t_given_x_minus_1 = self.q_forward_one_timestep(log_onehot_x_t_minus_1_given_x_0, t)  # q(x_t|x{t-1})
 
         # todo rem block?
         # log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)
@@ -432,12 +438,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # # q_log_sum_exp = torch.logsumexp(p_over_q, dim=1, keepdim=True)
         # # p_over_q = p_over_q - q_log_sum_exp
 
-        log_qt_extended = torch.cat((log_qt, log_zero_vector), dim=1)
-
+        # log_qt_extended = torch.cat((log_qt, log_zero_vector), dim=1)
 
         # formula 5
-        #                                q(x_{t-1} | x_0)    * q(x_t | x_{t-1})    / q(x_t | x_0)
-        log_q_x_t_minus_1_given_x_t_x_0 = log_q_x_t_minus_1  + log_qt_one_timestep - log_qt_extended
+        #                                q(x_{t-1} | x_0)              * q(x_t | x_{t-1})          / q(x_t | x_0)
+        log_q_x_t_minus_1_given_x_t_x_0 = log_q_x_t_minus_1_given_x_0  + log_q_x_t_given_x_minus_1 - log_q_x_t_given_x_0
 
         return torch.clamp(log_q_x_t_minus_1_given_x_t_x_0, -70, 0)
 

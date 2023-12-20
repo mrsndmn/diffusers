@@ -48,7 +48,7 @@ class LearnedClassifierFreeSamplingEmbeddings(ModelMixin, ConfigMixin):
 
         self.embeddings = torch.nn.Parameter(embeddings)
 
-class VQDiffusionAudioUnconditionalPipeline(DiffusionPipeline):
+class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
     encodec: EncodecModel
     clip_tokenizer: AutoTokenizer
