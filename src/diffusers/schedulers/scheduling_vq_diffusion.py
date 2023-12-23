@@ -327,7 +327,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         sample: torch.LongTensor,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
-        use_oracle_q_posterior = True,
+        use_oracle_q_posterior = True, # todo is it ok?
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by the reverse transition distribution. See
@@ -353,12 +353,18 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
                 returned, otherwise a tuple is returned where the first element is the sample tensor.
         """
 
+        batch_size = model_output.shape[0]
         timestep_t = torch.tensor([timestep], dtype=torch.long, device=model_output.device)
+        timestep_t = timestep_t.repeat(batch_size)
 
         if timestep == 0:
             log_p_x_t_min_1 = model_output
         else:
             if use_oracle_q_posterior:
+                log_zero_column = -70 * torch.ones([ model_output.shape[0], 1, model_output.shape[-1] ], device=model_output.device)
+                model_output = torch.cat([model_output, log_zero_column], dim=1)
+                model_output = torch.clamp(model_output, -70, 0)
+
                 log_p_x_t_min_1 = self.q_posterior_only(model_output, sample, timestep_t)
             else:
                 log_p_x_t_min_1 = self.q_posterior(model_output, sample, timestep_t)

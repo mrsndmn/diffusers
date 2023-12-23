@@ -85,6 +85,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         cross_attention_dim: Optional[int] = None,
         attention_bias: bool = False,
         sample_size: Optional[int] = None,
+        height: Optional[int] = None, # for assymetrical imiages (if (sample_size == width) != heigth)
         num_vector_embeds: Optional[int] = None,
         patch_size: Optional[int] = None,
         activation_fn: str = "geglu",
@@ -154,7 +155,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             assert sample_size is not None, "Transformer2DModel over discrete input must provide sample_size"
             assert num_vector_embeds is not None, "Transformer2DModel over discrete input must provide num_embed"
 
-            self.height = sample_size
+            self.height = height if height is not None else sample_size
             self.width = sample_size
             self.num_vector_embeds = num_vector_embeds
             self.num_latent_pixels = self.height * self.width

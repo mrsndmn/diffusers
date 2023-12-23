@@ -7,6 +7,9 @@ from datetime import datetime
 print("torch.cuda.is_available()", torch.cuda.is_available())
 print("start", datetime.now())
 
+from pathlib import Path
+from frechet_audio_distance import FrechetAudioDistance
+
 sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src')
 sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/transformers/src')
 
@@ -39,13 +42,17 @@ NUM_TRAIN_TIMESTEPS = 100
 BANDWIDTH = 3.0
 SAMPLE_RATE = 24000
 
+script_start_timestep = int(datetime.now().timestamp())
+
+AUDIO_MNIST_SAMPLES_PATH = "audio_mnist_full/audios"
+
 @dataclass
 class TrainingConfig:
     sample_size = MAX_AUDIO_CODES_LENGTH  # the generated image resolution
     train_batch_size = 32
     eval_batch_size = 16  # how many images to sample during evaluation
     num_epochs = 10000
-    gradient_accumulation_steps = 1
+    gradient_accumulation_steps = 3
     learning_rate = 1e-4
     lr_warmup_steps = 3000
     save_image_epochs = 2
@@ -136,30 +143,51 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
 
     # Save the images
     test_dir = os.path.join(config.output_dir, "samples")
-    os.makedirs(test_dir, exist_ok=True)
+    generated_samples_path = f"{test_dir}/{script_start_timestep}/{epoch}"
+    generated_samples_path = Path(generated_samples_path)
+    generated_samples_path.mkdir(parents=True, exist_ok=True)
 
     for i in range(audio_values.shape[0]):
         current_text_condition = text_condition[i]
         audio_wave = audio_values[i]
-        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}_orig_q.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
+        torchaudio.save(f"{generated_samples_path}/{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
+
+    frechet = FrechetAudioDistance(
+        model_name="vggish",
+        sample_rate=16000,
+        use_pca=False,
+        use_activation=False,
+        verbose=False,
+    )
+
+    fad_score = frechet.score(
+        "audio_mnist_full/audios/",
+        generated_samples_path,
+        background_embds_path="audio_mnist_full/audios/frechet_embeddings.npy",
+    )
+    print("fad_score", fad_score)
 
     audio_mnist_state_dict = torch.load("audio_mnist_classifier.pth", map_location='cpu')
     audio_mnist_classifier = AudioMNISTModel()
     audio_mnist_classifier.load_state_dict(audio_mnist_state_dict)
     audio_mnist_classifier.to(audio_values.device)
+    audio_mnist_classifier.eval()
 
     audio_values_spectrograms = []
     new_sample_rate = 8000
     resampler = torchaudio.transforms.Resample(orig_freq=SAMPLE_RATE, new_freq=new_sample_rate).to(audio_values.device)
+
     for i in range(audio_values.shape[0]):
         current_text_condition = text_condition[i]
         current_waveform = audio_values[i]
         resmpled_current_waveform = resampler(current_waveform)
-        torchaudio.save(f"{test_dir}/{epoch}_{current_text_condition}_for_classifier.wav", resmpled_current_waveform.to('cpu'), sample_rate=new_sample_rate)
+
+        # torchaudio.save(f"{test_dir}/{script_start_timestep}/{epoch}/{current_text_condition}_for_classifier.wav", resmpled_current_waveform.to('cpu'), sample_rate=new_sample_rate)
 
         resmpled_current_waveform_np = resmpled_current_waveform[0].cpu().numpy()
         spectrogram_t = torch.tensor(get_spectrogram(resmpled_current_waveform_np, sample_rate=new_sample_rate), device=audio_values.device)
         audio_values_spectrograms.append(spectrogram_t.float())
+
 
     audio_values_spectrograms = torch.cat(audio_values_spectrograms, dim=0)
     audio_values_spectrograms = audio_values_spectrograms.unsqueeze(1)
@@ -170,6 +198,10 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     classiier_classes = classiier_probas.max(dim=-1).indices
     print("classiier_classes", classiier_classes)
 
+    negative_log_likelihood = F.cross_entropy(classiier_logits, torch.tensor(condition_classes, device=classiier_logits.device))
+    eval_classifier_perplexity = torch.exp(negative_log_likelihood.detach()).item()
+    print("eval_classifier_perplexity", eval_classifier_perplexity)
+
     eval_classifier_accuracy = (classiier_classes == torch.tensor(condition_classes, device=classiier_classes.device)).float().mean().item()
 
     # todo make evaluation of audio mnist classifier with labels
@@ -177,11 +209,13 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     print(f"evaluate for epoch {epoch} done")
 
     return {
-        "eval_codes/min":    audio_codes.min(),
-        "eval_codes/max":    audio_codes.max(),
-        "eval_codes/median": audio_codes.median(),
-        "eval_codes/mean":   audio_codes.float().mean(),
-        "eval_classifier/accuracy": eval_classifier_accuracy,
+        "eval/codes_min":    audio_codes.min(),
+        "eval/codes_max":    audio_codes.max(),
+        "eval/codes_median": audio_codes.median(),
+        "eval/codes_mean":   audio_codes.float().mean(),
+        "eval/classifier_accuracy": eval_classifier_accuracy,
+        "eval/classifier_perplexity": eval_classifier_perplexity,
+        "eval/fad_score": fad_score,
     }
     # image_grid.save()
 
@@ -289,15 +323,18 @@ def train_loop(
 
                 print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
+                # save do not save noise here
                 log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_only(log_p_x_0=log_x0_reconstructed, x_t=noisy_audio_codes, t=timesteps)
 
                 print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
 
                 # log_p_x_0 = log_one_hot_audio_codes[:, :-1, :]
+                # but save noise here!
                 log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_only(log_p_x_0=log_one_hot_audio_codes, x_t=noisy_audio_codes, t=timesteps)
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
 
                 kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
+                kl_loss = kl_loss / 10
                 print_tensor_statistics("kl_loss       ", kl_loss)
 
                 kl_loss_sum_pixels = kl_loss.mean(dim=-1)
@@ -381,7 +418,8 @@ def train_loop(
                 if config.push_to_hub:
                     raise Exception("push_to_hub is not supported")
                 else:
-                    unwrapped_model.save_pretrained(config.output_dir)
+                    variant = f"{script_start_timestep}_my_loss_with_metrics"
+                    unwrapped_model.save_pretrained(config.output_dir, variant=variant)
 
 def count_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -389,7 +427,7 @@ def count_params(model):
 if __name__ == '__main__':
 
     print("loading dataset", datetime.now())
-    audio_mnist_dataset = datasets.load_from_disk("./audio_mnist_full")
+    audio_mnist_dataset = datasets.load_from_disk("./audio_mnist_zeros")
 
     audio_mnist_dataset_24khz = audio_mnist_dataset.cast_column("audio", Audio(sampling_rate=SAMPLE_RATE))
     print("loaded and casted dataset", datetime.now())
@@ -414,7 +452,7 @@ if __name__ == '__main__':
 
     print("creating processed dataset", datetime.now())
     # audio_mnist_dataset_24khz_processed = concatenate_datasets([audio_mnist_dataset_24khz.select(range(10))] * NUM_VECTORS_IN_CODEBOOK * 10)
-    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz # .select(range(512))
+    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz # .select(range(32))
     audio_mnist_dataset_24khz_processed.set_transform(process_audio)
     print("created processed dataset", datetime.now())
 
@@ -428,15 +466,17 @@ if __name__ == '__main__':
     model_kwargs = {
         "attention_bias": True,
         "cross_attention_dim": clip_text_model.config.hidden_size,
-        "attention_head_dim": height * width,
+        "attention_head_dim": 128,
         "num_attention_heads": 8,
         "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK + 1,
         "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
-        "norm_num_groups": 32,
         "sample_size": width,
-        "num_layers": 3,
+        "height": height,
+        "num_layers": 4,
         "activation_fn": "geglu-approximate",
     }
+
+    print("model_kwargs", model_kwargs)
 
     model = Transformer2DModel(**model_kwargs)
     assert model.is_input_continuous == False, 'transformer is discrete'
@@ -457,7 +497,6 @@ if __name__ == '__main__':
         num_warmup_steps=config.lr_warmup_steps,
         num_training_steps=(len(train_dataloader) * config.num_epochs),
     )
-
 
     encodec_model = encodec_model.to(device)
     encodec_model.eval()
