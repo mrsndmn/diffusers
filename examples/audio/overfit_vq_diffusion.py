@@ -26,7 +26,7 @@ from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPT
 from diffusers import VQDiffusionScheduler, Transformer2DModel, VQDiffusionPipeline
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
-from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioTextConditionalPipeline
+from diffusers.pipelines.deprecated.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioTextConditionalPipeline
 
 from dataclasses import dataclass
 import torch
@@ -67,12 +67,12 @@ class TrainingConfig:
 
     # optimizer
     learning_rate = 1e-4
-    lr_warmup_steps = 3000
+    lr_warmup_steps = 5000
     gradient_accumulation_steps = 3
 
     # save strategy
-    save_image_epochs = 2
-    save_model_epochs = 2
+    save_image_epochs = 3
+    save_model_epochs = 3
 
     # accelerator configs
     push_to_hub = False  # whether to upload the saved model to the HF Hub
@@ -278,7 +278,11 @@ def train_loop(
             print_tensor_statistics("log_one_hot_audio_codes", log_one_hot_audio_codes)
 
             add_noise_counter = time.perf_counter()
-            noisy_audio_codes = noise_scheduler.add_noise(log_one_hot_audio_codes, timesteps)
+            scheduler_noise_output = noise_scheduler.add_noise(log_one_hot_audio_codes, timesteps)
+            noisy_audio_codes = scheduler_noise_output['sample']
+            uniform_noise_x_t_given_x_0 = scheduler_noise_output['uniform_noise_x_t_given_x_0']
+            uniform_noise_x_t_minus_1_given_x_0 = scheduler_noise_output['uniform_noise_x_t_minus_1_given_x_0']
+
             logs['timings/add_noise'] = time.perf_counter() - add_noise_counter
 
             print_tensor_statistics("noisy_audio_codes", noisy_audio_codes)
@@ -311,6 +315,8 @@ def train_loop(
                     "log_p_x_0": log_x0_reconstructed,
                     "x_t":       noisy_audio_codes,
                     "t":         timesteps,
+                    "uniform_noise_x_t_given_x_0": uniform_noise_x_t_given_x_0,
+                    "uniform_noise_x_t_minus_1_given_x_0": uniform_noise_x_t_minus_1_given_x_0,
                 }
 
                 if config.q_posterior_version == Q_POSTERIOR_VERSION_PAPER:
@@ -330,6 +336,8 @@ def train_loop(
                     "log_p_x_0": log_one_hot_audio_codes,
                     "x_t":       noisy_audio_codes,
                     "t":         timesteps,
+                    "uniform_noise_x_t_given_x_0": uniform_noise_x_t_given_x_0,
+                    "uniform_noise_x_t_minus_1_given_x_0": uniform_noise_x_t_minus_1_given_x_0,
                 }
 
                 if config.q_posterior_version == Q_POSTERIOR_VERSION_PAPER:

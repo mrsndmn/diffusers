@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPTextModel, AutoTokenizer
 from diffusers import VQDiffusionScheduler, Transformer2DModel, VQDiffusionPipeline
-from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioTextConditionalPipeline
+from diffusers.pipelines.deprecated.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioTextConditionalPipeline
 from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl
 
 

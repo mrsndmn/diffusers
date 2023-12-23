@@ -309,19 +309,38 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # with mask probas
         log_one_hot_x_0_probas: torch.LongTensor, # (`torch.LongTensor` of shape `(batch size, num_classes, num latent pixels)`):
         timesteps: torch.IntTensor, # [ batch_size ]
+
     ) -> torch.LongTensor:
 
         # def q_sample(self, log_x_start, t):                 # diffusion step, q(xt|x0) and sample xt
         #
         # log_x_start can be onehot or not
 
-        # x_{t}
-        log_probs = self.q_forward(log_one_hot_x_0_probas, timesteps)
-        sample = self.q_sample(log_probs)
+        # x_{t-1}
+        log_probs_x_t_minus_1 = self.q_forward(log_one_hot_x_0_probas, timesteps - 1)
 
-        assert sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
+        uniform_noise_x_t_minus_1 = torch.rand(log_probs_x_t_minus_1.shape, device=log_probs_x_t_minus_1.device, generator=None)
+        noisy_log_probs_x_t_minus_1 = gumbel_noised(log_probs_x_t_minus_1, uniform_noise=uniform_noise_x_t_minus_1)
+        x_t_minus_1_sample = noisy_log_probs_x_t_minus_1.argmax(dim=1)
 
-        return sample
+        assert x_t_minus_1_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_minus_1_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
+
+        log_one_hot_x_t_minus_1 = index_to_log_onehot(x_t_minus_1_sample, self.num_embed)
+
+        log_probas_x_t_given_x_t_minus_1 = self.q_forward_one_timestep(log_one_hot_x_t_minus_1, timesteps)
+
+        uniform_noise_x_t = torch.rand(log_probas_x_t_given_x_t_minus_1.shape, device=log_probas_x_t_given_x_t_minus_1.device, generator=None)
+        noisy_log_probs_x_t = gumbel_noised(log_probas_x_t_given_x_t_minus_1, uniform_noise=uniform_noise_x_t)
+
+        x_t_sample = noisy_log_probs_x_t.argmax(dim=1)
+
+        assert x_t_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_minus_1_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
+
+        return {
+            "sample": x_t_sample,
+            "uniform_noise_x_t_given_x_0": uniform_noise_x_t_minus_1,
+            "uniform_noise_x_t_minus_1_given_x_0": uniform_noise_x_t,
+        }
 
     def step(
         self,
@@ -428,7 +447,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_onehot_x_t_minus_1_given_x_0 = index_to_log_onehot(x_t_minus_1_given_x_0, self.num_embed)
 
         # for t=0 masking will be made later, here wi will ignore it
-        log_q_x_t_given_x_minus_1 = self.q_forward_one_timestep(log_onehot_x_t_minus_1_given_x_0, t)  # q(x_t|x{t-1})
+        log_q_x_t_given_x_minus_1 = self.q_forward_one_timestep(log_onehot_x_t_minus_1_given_x_0, t)  # q(x_t|x_{t-1})
 
         # todo rem block?
         # log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)
@@ -452,7 +471,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         #                                q(x_{t-1} | x_0)              * q(x_t | x_{t-1})          / q(x_t | x_0)
         log_q_x_t_minus_1_given_x_t_x_0 = log_q_x_t_minus_1_given_x_0  + log_q_x_t_given_x_minus_1 - log_q_x_t_given_x_0
 
-        return torch.clamp(log_q_x_t_minus_1_given_x_t_x_0, -70, 0)
+        # formula 11
+        log_p_theta_x_t_minus_1 = log_q_x_t_minus_1_given_x_t_x_0 + log_p_x_0
+
+        return torch.clamp(log_p_theta_x_t_minus_1, -70, 0)
 
     def q_posterior_from_paper(self, log_p_x_0, x_t, t):
         """
@@ -488,7 +510,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
 
     # def q_posterior_orig(self, log_x_start, log_x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
-    def q_posterior_orig(self, log_p_x_0, x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
+    def q_posterior_orig(self, log_p_x_0, x_t, t, uniform_noise_x_t_given_x_0=None, uniform_noise_x_t_minus_1_given_x_0=None,):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
         # notice that log_x_t is onehot
         assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps
 

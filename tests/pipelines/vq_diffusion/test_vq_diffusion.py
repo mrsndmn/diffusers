@@ -22,7 +22,7 @@ from transformers import CLIPTextConfig, CLIPTextModel, CLIPTokenizer
 
 from transformers import EncodecModel
 from diffusers import Transformer2DModel, VQDiffusionPipeline, VQDiffusionScheduler, VQModel
-from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import LearnedClassifierFreeSamplingEmbeddings, VQDiffusionAudioTextConditionalPipeline
+from diffusers.pipelines.deprecated.vq_diffusion.pipeline_vq_diffusion import LearnedClassifierFreeSamplingEmbeddings, VQDiffusionAudioTextConditionalPipeline
 from diffusers.utils.testing_utils import load_numpy, nightly, require_torch_gpu, torch_device
 
 
