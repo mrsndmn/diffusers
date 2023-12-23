@@ -1,0 +1,4 @@
+experiment_name: "loss_ablation_no_auxilairy_loss"
+auxiliary_loss_weight: 0.01
+kl_loss_weight: 0.1
+decoder_nll_loss_weight: 0.0

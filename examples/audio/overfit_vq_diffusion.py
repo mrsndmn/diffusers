@@ -1,3 +1,4 @@
+import argparse
 import sys
 
 import torch
@@ -6,6 +7,9 @@ import torch.nn.functional as F
 from datetime import datetime
 print("torch.cuda.is_available()", torch.cuda.is_available())
 print("start", datetime.now())
+
+import time
+import yaml
 
 from pathlib import Path
 from frechet_audio_distance import FrechetAudioDistance
@@ -39,90 +43,46 @@ NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
 MAX_TRAIN_SAMPLES = 10
 NUM_TRAIN_TIMESTEPS = 100
-BANDWIDTH = 3.0
 SAMPLE_RATE = 24000
+BANDWIDTH = 3.0
 
-script_start_timestep = int(datetime.now().timestamp())
+script_start_time = datetime.now()
 
 AUDIO_MNIST_SAMPLES_PATH = "audio_mnist_full/audios"
 
 @dataclass
 class TrainingConfig:
+
     sample_size = MAX_AUDIO_CODES_LENGTH  # the generated image resolution
+
+    # dataset and iteration
+    dataset_path = "./audio_mnist_full_encodec_processed"
     train_batch_size = 32
     eval_batch_size = 16  # how many images to sample during evaluation
     num_epochs = 10000
-    gradient_accumulation_steps = 3
+
+    # optimizer
     learning_rate = 1e-4
     lr_warmup_steps = 3000
+    gradient_accumulation_steps = 3
+
+    # save strategy
     save_image_epochs = 2
     save_model_epochs = 2
-    mixed_precision = "no"  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = "ddpm-audio-mnist-128"  # the model name locally and on the HF Hub
 
+    # accelerator configs
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False
-    overwrite_output_dir = True  # overwrite the old model when re-running the notebook
+    mixed_precision = "no"  # `no` for float32, `fp16` for automatic mixed precision
     seed = 0
+
+    experiment_name = "anon"
+    output_dir = "ddpm-audio-mnist-128"  # the model name locally and on the HF Hub
+
+    # losses
     auxiliary_loss_weight = 0.01
-
-
-def process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, examples):
-
-    audio_codes_batch = []
-    audio_scales_batch = []
-    audio_embeddings_batch = []
-
-    for audio in examples['audio']:
-        example = {
-            "audio": {
-                "array": audio['array']
-            }
-        }
-        audio_processed = _process_audio_encodec(encodec_processor, encodec_model, example)
-        audio_codes_batch.append( audio_processed['audio_codes'] )
-        audio_scales_batch.append( audio_processed['audio_scales'] )
-        audio_embeddings_batch.append( audio_processed['audio_embeddings'] )
-
-    # print(examples["label"])
-    clip_processed = clip_tokenizer([ str(label) for label in examples["label"]], padding=True, return_tensors="pt")
-    return {
-        "audio_codes": audio_codes_batch,
-        # "audio_scales": audio_scales_batch,
-        "audio_embeddings": audio_embeddings_batch,
-        **clip_processed,
-    }
-
-def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, example):
-
-    # print("example['audio']['array']", example['audio']['array'])
-    raw_audio = torch.tensor(example['audio']['array'])
-    # print("raw_audio", raw_audio.shape)
-    result = encodec_processor(raw_audio=raw_audio, sampling_rate=encodec_processor.sampling_rate, return_tensors="pt")
-    encoder_outputs = encodec_model.encode(
-        result["input_values"].to(encodec_model.device),
-        result["padding_mask"].to(encodec_model.device),
-        bandwidth=BANDWIDTH,
-    )
-
-    audio_codes = encoder_outputs.audio_codes
-    # print("1 audio_codes.shape", audio_codes.shape)
-    audio_codes = audio_codes[0].permute(0, 2, 1)
-    audio_codes = audio_codes.reshape(audio_codes.shape[0], -1)
-    audio_codes = audio_codes.unsqueeze(1)
-    audio_codes = audio_codes.repeat(1, 1, 20)
-    # print("2 audio_codes.shape", audio_codes.shape)
-    audio_codes = audio_codes[0, :, :MAX_AUDIO_CODES_LENGTH]
-    # print("3 audio_codes.shape", audio_codes.shape)
-    audio_embeddings = encodec_model.quantizer.decode(audio_codes.unsqueeze(0))[0]
-
-    # print("audio_codes processed", audio_codes.shape)
-    # print("encoder_outputs.audio_scales", encoder_outputs.audio_scales)
-    return {
-        "audio_codes": audio_codes,
-        "audio_scales": encoder_outputs.audio_scales,
-        "audio_embeddings": audio_embeddings
-    }
+    kl_loss_weight = 0.1
+    decoder_nll_loss_weight = 1.0
 
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
@@ -142,8 +102,8 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     print("audio_values.shape", audio_values.shape) # [bs, n_channels, waveform_length]
 
     # Save the images
-    test_dir = os.path.join(config.output_dir, "samples")
-    generated_samples_path = f"{test_dir}/{script_start_timestep}/{epoch}"
+    test_dir = os.path.join(config.output_dir, config.experiment_name, "samples")
+    generated_samples_path = f"{test_dir}/{script_start_time}/{epoch}"
     generated_samples_path = Path(generated_samples_path)
     generated_samples_path.mkdir(parents=True, exist_ok=True)
 
@@ -209,13 +169,13 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     print(f"evaluate for epoch {epoch} done")
 
     return {
-        "eval/codes_min":    audio_codes.min(),
-        "eval/codes_max":    audio_codes.max(),
-        "eval/codes_median": audio_codes.median(),
-        "eval/codes_mean":   audio_codes.float().mean(),
-        "eval/classifier_accuracy": eval_classifier_accuracy,
-        "eval/classifier_perplexity": eval_classifier_perplexity,
-        "eval/fad_score": fad_score,
+        "eval_codes/min":    audio_codes.min(),
+        "eval_codes/max":    audio_codes.max(),
+        "eval_codes/median": audio_codes.median(),
+        "eval_codes/mean":   audio_codes.float().mean(),
+        "eval_metrics/classifier_accuracy": eval_classifier_accuracy,
+        "eval_metrics/classifier_perplexity": eval_classifier_perplexity,
+        "eval_metrics/fad_score": fad_score,
     }
     # image_grid.save()
 
@@ -248,7 +208,9 @@ def train_loop(
             raise Exception("push_to_hub option is not supported")
         elif config.output_dir is not None:
             os.makedirs(config.output_dir, exist_ok=True)
-        accelerator.init_trackers("train_example_" + str(datetime.now()))
+
+        tracker_name = config.experiment_name + "_" + str(script_start_time)
+        accelerator.init_trackers(tracker_name)
 
     # Prepare everything
     # There is no specific order to remember, you just need to unpack the
@@ -265,12 +227,14 @@ def train_loop(
         progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
 
-
         masked_tokens_counts = []
 
         for step, batch in enumerate(train_dataloader):
+            logs = {}
+
+            train_iteration_counter = time.perf_counter()
+
             audio_codes = batch["audio_codes"] # [ bs, num_channels, sequence_length ]
-            audio_embeddings = batch["audio_embeddings"]
 
             # Sample noise to add to the images
             bs = audio_codes.shape[0]
@@ -279,14 +243,19 @@ def train_loop(
             seq_len = audio_codes.shape[2]
 
             audio_codes = audio_codes.reshape([bs, -1])
-            print_tensor_statistics("audio_embeddings      ", audio_embeddings)
             print_tensor_statistics("audio_codes           ", audio_codes)
 
-            clip_outputs = clip_text_model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+            calc_clip_text_embeddings_counter = time.perf_counter()
+            with torch.no_grad():
+                print_tensor_statistics("input_ids", batch['input_ids'])
+                print_tensor_statistics("attention_mask", batch['attention_mask'])
+
+                clip_outputs = clip_text_model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+            logs['timings/calc_clip_text_embeddings'] = time.perf_counter() - calc_clip_text_embeddings_counter
 
             # Sample a random timestep for each image
             timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bs,), device=audio_embeddings.device
+                0, noise_scheduler.config.num_train_timesteps, (bs,), device=audio_codes.device
             ).long()
 
             # Add noise to the clean images according to the noise magnitude at each timestep
@@ -302,21 +271,29 @@ def train_loop(
             log_one_hot_audio_codes = index_to_log_onehot(audio_codes, noise_scheduler.num_embed)
             print_tensor_statistics("log_one_hot_audio_codes", log_one_hot_audio_codes)
 
+            add_noise_counter = time.perf_counter()
             noisy_audio_codes = noise_scheduler.add_noise(log_one_hot_audio_codes, timesteps)
+            logs['timings/add_noise'] = time.perf_counter() - add_noise_counter
+
             print_tensor_statistics("noisy_audio_codes", noisy_audio_codes)
             print_tensor_statistics("timesteps        ", timesteps)
+
+
 
             with accelerator.accumulate(model):
                 # Predict the noise residual
 
-                logs = {}
-
+                model_inference_counter = time.perf_counter()
                 log_x0_reconstructed = model(
                     hidden_states=noisy_audio_codes,
                     encoder_hidden_states=clip_outputs.last_hidden_state,
                     timestep=timesteps,
                     return_dict=False,
                 )[0]
+                logs['timings/model_inference'] = time.perf_counter() - model_inference_counter
+
+                calc_loss_counter = time.perf_counter()
+
                 log_zero_column = -70 * torch.ones([ log_x0_reconstructed.shape[0], 1, log_x0_reconstructed.shape[-1] ], device=log_x0_reconstructed.device)
                 log_x0_reconstructed = torch.cat([log_x0_reconstructed, log_zero_column], dim=1)
                 log_x0_reconstructed = torch.clamp(log_x0_reconstructed, -70, 0)
@@ -334,7 +311,7 @@ def train_loop(
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
 
                 kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
-                kl_loss = kl_loss / 10
+                kl_loss = kl_loss * config.kl_loss_weight
                 print_tensor_statistics("kl_loss       ", kl_loss)
 
                 kl_loss_sum_pixels = kl_loss.mean(dim=-1)
@@ -346,6 +323,7 @@ def train_loop(
 
                 non_zero_timesteps = (timesteps != 0)
                 decoder_x0_nll[non_zero_timesteps] = 0
+                decoder_x0_nll = decoder_x0_nll * config.decoder_nll_loss_weight
                 print_tensor_statistics("decoder_nll ", decoder_x0_nll)
 
                 zero_timesteps = ~non_zero_timesteps
@@ -357,21 +335,31 @@ def train_loop(
                 print("masked_tokens_count", masked_tokens_count)
                 masked_tokens_counts.append(masked_tokens_count)
 
-                if config.auxiliary_loss_weight > 0:
-                    log_one_hot_audio_codes_no_mask = log_one_hot_audio_codes[:, :-1, :]
-                    log_x0_reconstructed_no_mask = log_x0_reconstructed[:,:-1,:]
-                    assert log_one_hot_audio_codes_no_mask.shape == log_x0_reconstructed_no_mask.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_no_mask.shape} != {log_x0_reconstructed_no_mask.shape}"
-                    kl_aux = multinomial_kl(log_one_hot_audio_codes_no_mask, log_x0_reconstructed_no_mask)
-                    kl_aux = kl_aux.mean(dim=-1)
-                    print_tensor_statistics("kl_aux ", kl_aux)
-                    kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
+                # kl_aux
+                log_one_hot_audio_codes_no_mask = log_one_hot_audio_codes[:, :-1, :]
+                log_x0_reconstructed_no_mask = log_x0_reconstructed[:,:-1,:]
+                assert log_one_hot_audio_codes_no_mask.shape == log_x0_reconstructed_no_mask.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_no_mask.shape} != {log_x0_reconstructed_no_mask.shape}"
+                kl_aux = multinomial_kl(log_one_hot_audio_codes_no_mask, log_x0_reconstructed_no_mask)
+                kl_aux = kl_aux.mean(dim=-1)
+                print_tensor_statistics("kl_aux ", kl_aux)
+                kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
 
-                    result_loss += kl_aux
+                result_loss += kl_aux
 
+                logs['timings/calc_loss'] = time.perf_counter() - calc_loss_counter
+
+                backward_counter = time.perf_counter()
                 accelerator.backward(result_loss)
+                logs['timings/backward'] = time.perf_counter() - backward_counter
 
+                gradient_clipping_counter = time.perf_counter()
                 accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                logs['timings/gradient_clipping'] = time.perf_counter() - gradient_clipping_counter
+
+                optimizer_step_counter = time.perf_counter()
                 optimizer.step()
+                logs['timings/optimizer_step'] = time.perf_counter() - optimizer_step_counter
+
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
@@ -382,11 +370,11 @@ def train_loop(
             base_logs["loss/loss"]        =  result_loss.detach().item()
             base_logs["loss/kl_loss"]     =  kl_loss_sum_pixels.mean().detach().item()
             base_logs["loss/decoder_nll"] =  decoder_x0_nll.mean().detach().item()
-            if config.auxiliary_loss_weight > 0:
-                base_logs["loss/kl_aux"] = kl_aux.detach().item()
+            base_logs["loss/kl_aux"]      = kl_aux.detach().item()
 
-            base_logs["params/lr"]        =  lr_scheduler.get_last_lr()[0]
-            base_logs["params/step"]      =  global_step
+            base_logs["params/lr"]    =  lr_scheduler.get_last_lr()[0]
+            base_logs["params/step"]  =  global_step
+            base_logs["params/epoch"] =  epoch
 
             progress_bar.set_postfix(**base_logs)
 
@@ -394,10 +382,15 @@ def train_loop(
 
             logs['metrics/mean_masked_tokens_count'] = torch.tensor(masked_tokens_counts).float().mean().detach().cpu().item()
 
-            logs["system/gpu_memory_allocated"] = torch.cuda.memory_allocated()
+            if global_step % 100 == 0:
+                logs["system/gpu_memory_allocated"] = torch.cuda.memory_allocated()
+
+            logs['timings/train_iteration'] = time.perf_counter() - train_iteration_counter
 
             accelerator.log(logs, step=global_step)
             global_step += 1
+
+            # go to start of iteration over train dataloader
 
         # After each epoch you optionally sample some demo images with evaluate() and save the model
         if accelerator.is_main_process:
@@ -411,14 +404,17 @@ def train_loop(
                     transformer=unwrapped_model,
                     scheduler=noise_scheduler,
                 )
+
+                evaluate_start_counter = time.perf_counter()
                 logs_scalars = evaluate(config, epoch, pipeline)
+                logs_scalars['timings/evaluate_iteration'] = time.perf_counter() - evaluate_start_counter
                 accelerator.log(logs_scalars, step=global_step)
 
             if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
                 if config.push_to_hub:
                     raise Exception("push_to_hub is not supported")
                 else:
-                    variant = f"{script_start_timestep}_my_loss_with_metrics"
+                    variant = config.experiment_name + f"epoch_{epoch}_" + str(script_start_time)
                     unwrapped_model.save_pretrained(config.output_dir, variant=variant)
 
 def count_params(model):
@@ -426,12 +422,27 @@ def count_params(model):
 
 if __name__ == '__main__':
 
+    # https://github.com/pytorch/pytorch/issues/40403#issuecomment-648439409
+    # torch.multiprocessing.set_start_method('spawn')
+
+    config = TrainingConfig()
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config")
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as file:
+        print("override config params from", args.config)
+        training_config_overwrite: dict = yaml.safe_load(file)
+        for k, v in training_config_overwrite.items():
+            print("override config param:", k, v)
+            config.__setattr__(k, v)
+
+    print("config", config)
+
     print("loading dataset", datetime.now())
-    audio_mnist_dataset = datasets.load_from_disk("./audio_mnist_zeros")
-
-    audio_mnist_dataset_24khz = audio_mnist_dataset.cast_column("audio", Audio(sampling_rate=SAMPLE_RATE))
+    audio_mnist_dataset_24khz_processed = datasets.load_from_disk(config.dataset_path)
     print("loaded and casted dataset", datetime.now())
-
 
     # librispeech_dummy = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
 
@@ -444,22 +455,18 @@ if __name__ == '__main__':
     clip_text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
     clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
-    config = TrainingConfig()
-
-    def process_audio(example):
-        return process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, example)
-
-
-    print("creating processed dataset", datetime.now())
-    # audio_mnist_dataset_24khz_processed = concatenate_datasets([audio_mnist_dataset_24khz.select(range(10))] * NUM_VECTORS_IN_CODEBOOK * 10)
-    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz # .select(range(32))
-    audio_mnist_dataset_24khz_processed.set_transform(process_audio)
-    print("created processed dataset", datetime.now())
 
     collator = DefaultDataCollator()
 
     print("audio_mnist_dataset_24khz_processed", len(audio_mnist_dataset_24khz_processed))
-    train_dataloader = torch.utils.data.DataLoader(audio_mnist_dataset_24khz_processed, collate_fn=collator, batch_size=config.train_batch_size, shuffle=True)
+    train_dataloader = torch.utils.data.DataLoader(
+        audio_mnist_dataset_24khz_processed,
+        collate_fn=collator,
+        batch_size=config.train_batch_size,
+        shuffle=True,
+        # pin_memory=True,
+        # num_workers=2,
+    )
 
     height = 1
     width = MAX_AUDIO_CODES_LENGTH
@@ -472,7 +479,7 @@ if __name__ == '__main__':
         "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
         "sample_size": width,
         "height": height,
-        "num_layers": 4,
+        "num_layers": 8,
         "activation_fn": "geglu-approximate",
     }
 
