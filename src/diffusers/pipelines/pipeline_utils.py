@@ -28,7 +28,14 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import numpy as np
 import PIL.Image
 import torch
-from huggingface_hub import ModelCard, create_repo, hf_hub_download, model_info, snapshot_download
+from huggingface_hub import (
+    ModelCard,
+    create_repo,
+    hf_hub_download,
+    model_info,
+    snapshot_download,
+)
+from huggingface_hub.utils import validate_hf_hub_args
 from packaging import version
 from requests.exceptions import HTTPError
 from tqdm.auto import tqdm
@@ -40,8 +47,6 @@ from ..schedulers.scheduling_utils import SCHEDULER_CONFIG_NAME
 from ..utils import (
     CONFIG_NAME,
     DEPRECATED_REVISION_ARGS,
-    DIFFUSERS_CACHE,
-    HF_HUB_OFFLINE,
     SAFETENSORS_WEIGHTS_NAME,
     WEIGHTS_NAME,
     BaseOutput,
@@ -256,10 +261,11 @@ def variant_compatible_siblings(filenames, variant=None) -> Union[List[os.PathLi
     return usable_filenames, variant_filenames
 
 
-def warn_deprecated_model_variant(pretrained_model_name_or_path, use_auth_token, variant, revision, model_filenames):
+@validate_hf_hub_args
+def warn_deprecated_model_variant(pretrained_model_name_or_path, token, variant, revision, model_filenames):
     info = model_info(
         pretrained_model_name_or_path,
-        use_auth_token=use_auth_token,
+        token=token,
         revision=None,
     )
     filenames = {sibling.rfilename for sibling in info.siblings}
@@ -382,7 +388,6 @@ def _get_pipeline_class(
             custom_pipeline,
             module_file=file_name,
             class_name=class_name,
-            repo_id=repo_id,
             cache_dir=cache_dir,
             revision=revision,
         )
@@ -916,6 +921,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
         return torch.float32
 
     @classmethod
+    @validate_hf_hub_args
     def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], **kwargs):
         r"""
         Instantiate a PyTorch diffusion pipeline from pretrained pipeline weights.
@@ -983,7 +989,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
             local_files_only (`bool`, *optional*, defaults to `False`):
                 Whether to only load local model weights and configuration files or not. If set to `True`, the model
                 won't be downloaded from the Hub.
-            use_auth_token (`str` or *bool*, *optional*):
+            token (`str` or *bool*, *optional*):
                 The token to use as HTTP bearer authorization for remote files. If `True`, the token generated from
                 `diffusers-cli login` (stored in `~/.huggingface`) is used.
             revision (`str`, *optional*, defaults to `"main"`):
@@ -1063,12 +1069,12 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
         >>> pipeline.scheduler = scheduler
         ```
         """
-        cache_dir = kwargs.pop("cache_dir", DIFFUSERS_CACHE)
+        cache_dir = kwargs.pop("cache_dir", None)
         resume_download = kwargs.pop("resume_download", False)
         force_download = kwargs.pop("force_download", False)
         proxies = kwargs.pop("proxies", None)
-        local_files_only = kwargs.pop("local_files_only", HF_HUB_OFFLINE)
-        use_auth_token = kwargs.pop("use_auth_token", None)
+        local_files_only = kwargs.pop("local_files_only", None)
+        token = kwargs.pop("token", None)
         revision = kwargs.pop("revision", None)
         from_flax = kwargs.pop("from_flax", False)
         torch_dtype = kwargs.pop("torch_dtype", None)
@@ -1101,7 +1107,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 force_download=force_download,
                 proxies=proxies,
                 local_files_only=local_files_only,
-                use_auth_token=use_auth_token,
+                token=token,
                 revision=revision,
                 from_flax=from_flax,
                 use_safetensors=use_safetensors,
@@ -1308,7 +1314,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 "force_download": force_download,
                 "proxies": proxies,
                 "local_files_only": local_files_only,
-                "use_auth_token": use_auth_token,
+                "token": token,
                 "revision": revision,
                 "torch_dtype": torch_dtype,
                 "custom_pipeline": custom_pipeline,
@@ -1538,6 +1544,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 cpu_offload(model, device, offload_buffers=offload_buffers)
 
     @classmethod
+    @validate_hf_hub_args
     def download(cls, pretrained_model_name, **kwargs) -> Union[str, os.PathLike]:
         r"""
         Download and cache a PyTorch diffusion pipeline from pretrained pipeline weights.
@@ -1585,7 +1592,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
             local_files_only (`bool`, *optional*, defaults to `False`):
                 Whether to only load local model weights and configuration files or not. If set to `True`, the model
                 won't be downloaded from the Hub.
-            use_auth_token (`str` or *bool*, *optional*):
+            token (`str` or *bool*, *optional*):
                 The token to use as HTTP bearer authorization for remote files. If `True`, the token generated from
                 `diffusers-cli login` (stored in `~/.huggingface`) is used.
             revision (`str`, *optional*, defaults to `"main"`):
@@ -1628,12 +1635,12 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
         </Tip>
 
         """
-        cache_dir = kwargs.pop("cache_dir", DIFFUSERS_CACHE)
+        cache_dir = kwargs.pop("cache_dir", None)
         resume_download = kwargs.pop("resume_download", False)
         force_download = kwargs.pop("force_download", False)
         proxies = kwargs.pop("proxies", None)
-        local_files_only = kwargs.pop("local_files_only", HF_HUB_OFFLINE)
-        use_auth_token = kwargs.pop("use_auth_token", None)
+        local_files_only = kwargs.pop("local_files_only", None)
+        token = kwargs.pop("token", None)
         revision = kwargs.pop("revision", None)
         from_flax = kwargs.pop("from_flax", False)
         custom_pipeline = kwargs.pop("custom_pipeline", None)
@@ -1655,11 +1662,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
         model_info_call_error: Optional[Exception] = None
         if not local_files_only:
             try:
-                info = model_info(
-                    pretrained_model_name,
-                    use_auth_token=use_auth_token,
-                    revision=revision,
-                )
+                info = model_info(pretrained_model_name, token=token, revision=revision)
             except HTTPError as e:
                 logger.warn(f"Couldn't connect to the Hub: {e}.\nWill try to load from local cache.")
                 local_files_only = True
@@ -1674,7 +1677,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 proxies=proxies,
                 force_download=force_download,
                 resume_download=resume_download,
-                use_auth_token=use_auth_token,
+                token=token,
             )
 
             config_dict = cls._dict_from_json_file(config_file)
@@ -1724,9 +1727,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
             if revision in DEPRECATED_REVISION_ARGS and version.parse(
                 version.parse(__version__).base_version
             ) >= version.parse("0.22.0"):
-                warn_deprecated_model_variant(
-                    pretrained_model_name, use_auth_token, variant, revision, model_filenames
-                )
+                warn_deprecated_model_variant(pretrained_model_name, token, variant, revision, model_filenames)
 
             model_folder_names = {os.path.split(f)[0] for f in model_filenames if os.path.split(f)[0] in folder_names}
 
@@ -1868,7 +1869,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                 resume_download=resume_download,
                 proxies=proxies,
                 local_files_only=local_files_only,
-                use_auth_token=use_auth_token,
+                token=token,
                 revision=revision,
                 allow_patterns=allow_patterns,
                 ignore_patterns=ignore_patterns,
@@ -1892,7 +1893,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
                         "force_download": force_download,
                         "proxies": proxies,
                         "local_files_only": local_files_only,
-                        "use_auth_token": use_auth_token,
+                        "token": token,
                         "variant": variant,
                         "use_safetensors": use_safetensors,
                     }
