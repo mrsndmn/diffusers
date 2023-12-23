@@ -161,7 +161,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         gamma_cum_start: float = 0.000009,
         gamma_cum_end: float = 0.99999,
         device='cpu',
+        use_oracle_q_posterior = True, # todo is it ok?
     ):
+
+        self.use_oracle_q_posterior = use_oracle_q_posterior
         self.num_embed = num_vec_classes
 
         # By convention, the index for the mask class is the last class index
@@ -327,7 +330,6 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         sample: torch.LongTensor,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
-        use_oracle_q_posterior = True, # todo is it ok?
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by the reverse transition distribution. See
@@ -360,7 +362,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         if timestep == 0:
             log_p_x_t_min_1 = model_output
         else:
-            if use_oracle_q_posterior:
+            if self.use_oracle_q_posterior:
                 log_zero_column = -70 * torch.ones([ model_output.shape[0], 1, model_output.shape[-1] ], device=model_output.device)
                 model_output = torch.cat([model_output, log_zero_column], dim=1)
                 model_output = torch.clamp(model_output, -70, 0)

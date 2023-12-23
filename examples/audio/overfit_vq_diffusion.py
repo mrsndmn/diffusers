@@ -50,6 +50,10 @@ script_start_time = datetime.now()
 
 AUDIO_MNIST_SAMPLES_PATH = "audio_mnist_full/audios"
 
+Q_POSTERIOR_VERSION_PAPER = 'Q_POSTERIOR_VERSION_PAPER'
+Q_POSTERIOR_VERSION_OFFICIAL_REPO = 'Q_POSTERIOR_VERSION_OFFICIAL_REPO'
+VALID_Q_POSTERIOR_VERSIONS = set([Q_POSTERIOR_VERSION_PAPER, Q_POSTERIOR_VERSION_OFFICIAL_REPO])
+
 @dataclass
 class TrainingConfig:
 
@@ -83,6 +87,8 @@ class TrainingConfig:
     auxiliary_loss_weight = 0.01
     kl_loss_weight = 0.1
     decoder_nll_loss_weight = 1.0
+
+    q_posterior_version = Q_POSTERIOR_VERSION_PAPER # Enum(q_posterior_paper, q_posterior)
 
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
@@ -301,13 +307,38 @@ def train_loop(
                 print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
                 # save do not save noise here
-                log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_only(log_p_x_0=log_x0_reconstructed, x_t=noisy_audio_codes, t=timesteps)
+                q_posterior_approximate_args = {
+                    "log_p_x_0": log_x0_reconstructed,
+                    "x_t":       noisy_audio_codes,
+                    "t":         timesteps,
+                }
+
+                if config.q_posterior_version == Q_POSTERIOR_VERSION_PAPER:
+                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_only(**q_posterior_approximate_args)
+                elif config.q_posterior_version == Q_POSTERIOR_VERSION_OFFICIAL_REPO:
+                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_approximate_args)
+                else:
+                    raise ValueError("unhandled value of q_posterior version:", config.q_posterior_version)
+
 
                 print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
 
                 # log_p_x_0 = log_one_hot_audio_codes[:, :-1, :]
                 # but save noise here!
-                log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_only(log_p_x_0=log_one_hot_audio_codes, x_t=noisy_audio_codes, t=timesteps)
+
+                q_posterior_true_args = {
+                    "log_p_x_0": log_one_hot_audio_codes,
+                    "x_t":       noisy_audio_codes,
+                    "t":         timesteps,
+                }
+
+                if config.q_posterior_version == Q_POSTERIOR_VERSION_PAPER:
+                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_only(**q_posterior_true_args)
+                elif config.q_posterior_version == Q_POSTERIOR_VERSION_OFFICIAL_REPO:
+                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_true_args)
+                else:
+                    raise ValueError("unhandled value of q_posterior version:", config.q_posterior_version)
+
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
 
                 kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
@@ -438,6 +469,8 @@ if __name__ == '__main__':
             print("override config param:", k, v)
             config.__setattr__(k, v)
 
+    assert config.q_posterior_version in VALID_Q_POSTERIOR_VERSIONS, 'q_posterior_version value is ok'
+
     print("config", config)
 
     print("loading dataset", datetime.now())
@@ -491,10 +524,12 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # device = 'cpu'
 
+    use_oracle_q_posterior: bool = config.q_posterior_version == Q_POSTERIOR_VERSION_PAPER
     noise_scheduler = VQDiffusionScheduler(
         num_vec_classes=model_kwargs['num_vector_embeds'],
         num_train_timesteps=NUM_TRAIN_TIMESTEPS,
         device=device,
+        use_oracle_q_posterior=use_oracle_q_posterior,
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
