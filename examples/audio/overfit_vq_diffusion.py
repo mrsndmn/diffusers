@@ -71,8 +71,8 @@ class TrainingConfig:
     gradient_accumulation_steps = 3
 
     # save strategy
-    save_image_epochs = 3
-    save_model_epochs = 3
+    save_image_epochs = 10
+    save_model_epochs = 25
 
     # accelerator configs
     push_to_hub = False  # whether to upload the saved model to the HF Hub
@@ -453,7 +453,7 @@ def train_loop(
                 if config.push_to_hub:
                     raise Exception("push_to_hub is not supported")
                 else:
-                    variant = config.experiment_name + f"epoch_{epoch}_" + str(script_start_time)
+                    variant = config.experiment_name + str(script_start_time)
                     unwrapped_model.save_pretrained(config.output_dir, variant=variant)
 
 def count_params(model):

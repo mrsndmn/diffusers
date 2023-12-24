@@ -23,7 +23,6 @@ from ..configuration_utils import ConfigMixin, register_to_config
 from ..utils import BaseOutput
 from .scheduling_utils import SchedulerMixin
 
-
 @dataclass
 class VQDiffusionSchedulerOutput(BaseOutput):
     """
@@ -321,20 +320,18 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         uniform_noise_x_t_minus_1 = torch.rand(log_probs_x_t_minus_1.shape, device=log_probs_x_t_minus_1.device, generator=None)
         noisy_log_probs_x_t_minus_1 = gumbel_noised(log_probs_x_t_minus_1, uniform_noise=uniform_noise_x_t_minus_1)
-        x_t_minus_1_sample = noisy_log_probs_x_t_minus_1.argmax(dim=1)
+        # x_t_minus_1_sample = noisy_log_probs_x_t_minus_1.argmax(dim=1)
+        # assert x_t_minus_1_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_minus_1_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
+        # log_one_hot_x_t_minus_1 = index_to_log_onehot(x_t_minus_1_sample, self.num_embed)
 
-        assert x_t_minus_1_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_minus_1_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
-
-        log_one_hot_x_t_minus_1 = index_to_log_onehot(x_t_minus_1_sample, self.num_embed)
-
-        log_probas_x_t_given_x_t_minus_1 = self.q_forward_one_timestep(log_one_hot_x_t_minus_1, timesteps)
+        log_probas_x_t_given_x_t_minus_1 = self.q_forward_one_timestep(noisy_log_probs_x_t_minus_1, timesteps)
 
         uniform_noise_x_t = torch.rand(log_probas_x_t_given_x_t_minus_1.shape, device=log_probas_x_t_given_x_t_minus_1.device, generator=None)
         noisy_log_probs_x_t = gumbel_noised(log_probas_x_t_given_x_t_minus_1, uniform_noise=uniform_noise_x_t)
 
         x_t_sample = noisy_log_probs_x_t.argmax(dim=1)
 
-        assert x_t_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_minus_1_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
+        assert x_t_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
 
         return {
             "sample": x_t_sample,
@@ -442,12 +439,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         log_q_x_t_minus_1_given_x_0 = self.q_forward(log_p_x_0, t-1) # q(x_{t-1}|x_0)
         log_q_x_t_minus_1_given_x_0 = gumbel_noised(log_q_x_t_minus_1_given_x_0, uniform_noise=uniform_noise_x_t_minus_1_given_x_0)
-        x_t_minus_1_given_x_0 = log_q_x_t_minus_1_given_x_0.argmax(dim=1)
+        # x_t_minus_1_given_x_0 = log_q_x_t_minus_1_given_x_0.argmax(dim=1)
 
-        log_onehot_x_t_minus_1_given_x_0 = index_to_log_onehot(x_t_minus_1_given_x_0, self.num_embed)
+        # log_onehot_x_t_minus_1_given_x_0 = index_to_log_onehot(x_t_minus_1_given_x_0, self.num_embed)
 
         # for t=0 masking will be made later, here wi will ignore it
-        log_q_x_t_given_x_minus_1 = self.q_forward_one_timestep(log_onehot_x_t_minus_1_given_x_0, t)  # q(x_t|x_{t-1})
+        log_q_x_t_given_x_minus_1 = self.q_forward_one_timestep(log_q_x_t_minus_1_given_x_0, t)  # q(x_t|x_{t-1})
 
         # todo rem block?
         # log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)

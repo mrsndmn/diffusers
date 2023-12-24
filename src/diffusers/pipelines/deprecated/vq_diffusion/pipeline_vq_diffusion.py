@@ -19,7 +19,7 @@ from transformers import CLIPTextModel, CLIPTokenizer, EncodecModel, AutoTokeniz
 
 from ....configuration_utils import ConfigMixin, register_to_config
 from ....models import ModelMixin, Transformer2DModel, VQModel
-from ....schedulers import VQDiffusionScheduler
+from ....schedulers.scheduling_vq_diffusion import VQDiffusionScheduler
 from ....utils import logging
 from ...pipeline_utils import AudioCodesPipelineOutput, DiffusionPipeline, ImagePipelineOutput
 
