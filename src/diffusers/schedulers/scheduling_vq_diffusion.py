@@ -420,12 +420,12 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_one_vector = torch.zeros(batch_size, 1, 1).to(torch.long).to(log_p_x_0.device)
         log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, x_t.shape[-1]).to(log_p_x_0.device)
 
-        log_p_x_0 = log_p_x_0 - torch.logsumexp(log_p_x_0, dim=1, keepdim=True)
+        log_p_x_0_normalized = log_p_x_0 - torch.logsumexp(log_p_x_0, dim=1, keepdim=True)
 
-        log_p_x_0_detached = log_p_x_0.detach()
+        log_p_x_0_normalized_detached = log_p_x_0_normalized.detach()
         # log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
-        log_onehot_x_0_detached = index_to_log_onehot(log_p_x_0_detached.argmax(dim=1), self.num_embed)
-        q_forward_input = log_onehot_x_0_detached
+        log_onehot_x_0_detached = index_to_log_onehot(log_p_x_0_normalized_detached.argmax(dim=1), self.num_embed)
+        q_forward_input = log_p_x_0_normalized
 
         # calculated x_t
         log_q_x_t_given_x_0 = self.q_forward(q_forward_input, t) # q(x_t|x_0)
