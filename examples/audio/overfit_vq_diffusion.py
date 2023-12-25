@@ -94,6 +94,8 @@ class TrainingConfig:
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
+
+    evaluate_pipeline_counter = time.perf_counter()
     condition_classes = list(range(10))
     text_condition = [ str(x) for x in condition_classes ]
     pipeline_out = pipeline(
@@ -106,8 +108,11 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     audio_values = pipeline_out.audio_values
     print("audio_codes.shape", audio_codes.shape)
     print("audio_values.shape", audio_values.shape) # [bs, n_channels, waveform_length]
+    timings_evaluate_pipeline = time.perf_counter() - timings_evaluate_pipeline
 
     # Save the images
+
+    evaluate_save_samples_counter = time.perf_counter()
     test_dir = os.path.join(config.output_dir, config.experiment_name, "samples")
     generated_samples_path = f"{test_dir}/{script_start_time}/{epoch}"
     generated_samples_path = Path(generated_samples_path)
@@ -117,7 +122,9 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
         current_text_condition = text_condition[i]
         audio_wave = audio_values[i]
         torchaudio.save(f"{generated_samples_path}/{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
+    timings_evaluate_save_samples_counter = time.perf_counter() - evaluate_save_samples_counter
 
+    evaluate_fad_counter = time.perf_counter()
     frechet = FrechetAudioDistance(
         model_name="vggish",
         sample_rate=16000,
@@ -131,8 +138,10 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
         generated_samples_path,
         background_embds_path="audio_mnist_full/audios/frechet_embeddings.npy",
     )
+    timings_evaluate_fad_counter = time.perf_counter() - evaluate_fad_counter
     print("fad_score", fad_score)
 
+    evaluate_classifier_counter = time.perf_counter()
     audio_mnist_state_dict = torch.load("audio_mnist_classifier.pth", map_location='cpu')
     audio_mnist_classifier = AudioMNISTModel()
     audio_mnist_classifier.load_state_dict(audio_mnist_state_dict)
@@ -169,6 +178,8 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     print("eval_classifier_perplexity", eval_classifier_perplexity)
 
     eval_classifier_accuracy = (classiier_classes == torch.tensor(condition_classes, device=classiier_classes.device)).float().mean().item()
+    timings_evaluate_classifier_counter = time.perf_counter() - evaluate_classifier_counter
+
 
     # todo make evaluation of audio mnist classifier with labels
 
@@ -182,6 +193,11 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
         "eval_metrics/classifier_accuracy": eval_classifier_accuracy,
         "eval_metrics/classifier_perplexity": eval_classifier_perplexity,
         "eval_metrics/fad_score": fad_score,
+
+        "timings/evaluate_pipeline": timings_evaluate_pipeline,
+        "timings/evaluate_save_samples": timings_evaluate_save_samples_counter,
+        "timings/evaluate_fad": timings_evaluate_fad_counter,
+        "timings/evaluate_classifier": timings_evaluate_classifier_counter,
     }
     # image_grid.save()
 
