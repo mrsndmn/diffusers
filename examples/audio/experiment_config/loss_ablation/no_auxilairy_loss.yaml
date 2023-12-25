@@ -1,4 +1,5 @@
-experiment_name: "loss_ablation_no_auxilairy_loss_with_stop_gradient_normalize_probas_and_sampling_fix_decoder_nll"
+experiment_name: "loss_ablation_no_auxilairy_loss_with_stop_gradient_normalize_probas_timestep_importance_sampling"
 auxiliary_loss_weight: 0.0
 kl_loss_weight: 0.1
 decoder_nll_loss_weight: 1.0
+timesteps_sampling: "importance"

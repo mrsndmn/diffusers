@@ -35,6 +35,8 @@ from accelerate import Accelerator
 from tqdm.auto import tqdm
 import os
 
+from timestep_sampling import TimestepsSampler
+
 from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
 
 from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical
@@ -90,6 +92,8 @@ class TrainingConfig:
 
     q_posterior_version = Q_POSTERIOR_VERSION_PAPER # Enum(q_posterior_paper, q_posterior)
 
+    timesteps_sampling = TimestepsSampler.SAMPLING_STRATEGY_UNIFORM
+
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     # Sample some images from random noise (this is the backward diffusion process).
@@ -108,7 +112,7 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     audio_values = pipeline_out.audio_values
     print("audio_codes.shape", audio_codes.shape)
     print("audio_values.shape", audio_values.shape) # [bs, n_channels, waveform_length]
-    timings_evaluate_pipeline = time.perf_counter() - timings_evaluate_pipeline
+    timings_evaluate_pipeline = time.perf_counter() - evaluate_pipeline_counter
 
     # Save the images
 
@@ -212,6 +216,7 @@ def train_loop(
     clip_text_model: CLIPTextModel,
     encodec_model: EncodecModel,
     noise_scheduler: VQDiffusionScheduler,
+    timesteps_sampler: TimestepsSampler,
     optimizer,
     train_dataloader,
     lr_scheduler,
@@ -276,9 +281,7 @@ def train_loop(
             logs['timings/calc_clip_text_embeddings'] = time.perf_counter() - calc_clip_text_embeddings_counter
 
             # Sample a random timestep for each image
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bs,), device=audio_codes.device
-            ).long()
+            timesteps, timesteps_weight = timesteps_sampler.sample(bs)
 
             # Add noise to the clean images according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
@@ -366,27 +369,33 @@ def train_loop(
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
 
                 kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
-                kl_loss = kl_loss * config.kl_loss_weight
                 print_tensor_statistics("kl_loss       ", kl_loss)
 
-                kl_loss_sum_pixels = kl_loss.mean(dim=-1)
-                print_tensor_statistics("kl_loss_sum_pixels ", kl_loss_sum_pixels)
+                kl_loss = kl_loss.mean(dim=-1) # [ bs ]
+                timesteps_sampler.step(kl_loss, timesteps)
+
+                # kl_loss = kl_loss / timesteps_weight
+
+                non_zero_timesteps = (timesteps != 0)
+                zero_timesteps = ~non_zero_timesteps
+                kl_loss[zero_timesteps] = 0
+                print_tensor_statistics("kl_loss zeroed zero t ", kl_loss)
+
+                # sum due to each loss item has already been weighted with timesteps_weight
+                kl_loss = kl_loss.sum() * config.kl_loss_weight
+
 
                 # L_{0}
 
-                decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_x0_reconstructed)
+                decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_true_prob_x_t_min_1)
 
                 decoder_x0_nll = decoder_x0_nll.mean(dim=-1)
 
-                non_zero_timesteps = (timesteps != 0)
                 decoder_x0_nll[non_zero_timesteps] = 0
                 decoder_x0_nll = decoder_x0_nll * config.decoder_nll_loss_weight
                 print_tensor_statistics("decoder_nll ", decoder_x0_nll)
 
-                zero_timesteps = ~non_zero_timesteps
-                kl_loss_sum_pixels[zero_timesteps] = 0
-                print_tensor_statistics("kl_loss_sum_pixels zeroed zero t ", kl_loss_sum_pixels)
-                result_loss = (kl_loss_sum_pixels + decoder_x0_nll).mean()
+                result_loss = kl_loss + decoder_x0_nll.mean()
 
                 masked_tokens_count = (noisy_audio_codes == noise_scheduler.mask_class).sum().detach().cpu().item()
                 print("masked_tokens_count", masked_tokens_count)
@@ -425,7 +434,7 @@ def train_loop(
 
             base_logs = {}
             base_logs["loss/loss"]        =  result_loss.detach().item()
-            base_logs["loss/kl_loss"]     =  kl_loss_sum_pixels.mean().detach().item()
+            base_logs["loss/kl_loss"]     =  kl_loss.detach().item()
             base_logs["loss/decoder_nll"] =  decoder_x0_nll.mean().detach().item()
             base_logs["loss/kl_aux"]      = kl_aux.detach().item()
 
@@ -558,6 +567,9 @@ if __name__ == '__main__':
         use_oracle_q_posterior=use_oracle_q_posterior,
     )
 
+    timesteps_sampler = TimestepsSampler(strategy=config.timesteps_sampling, num_timesteps=NUM_TRAIN_TIMESTEPS)
+    timesteps_sampler.to(device)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 
     lr_scheduler = get_cosine_schedule_with_warmup(
@@ -577,4 +589,4 @@ if __name__ == '__main__':
 
     print("model params:", count_params(model))
 
-    train_loop(config, model, clip_tokenizer, clip_text_model, encodec_model, noise_scheduler, optimizer, train_dataloader, lr_scheduler)
+    train_loop(config, model, clip_tokenizer, clip_text_model, encodec_model, noise_scheduler, timesteps_sampler, optimizer, train_dataloader, lr_scheduler)
