@@ -357,7 +357,9 @@ def train_loop(
                 print_tensor_statistics("kl_loss_sum_pixels ", kl_loss_sum_pixels)
 
                 # L_{0}
-                decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_model_prob_x_t_min_1)
+
+                decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_x0_reconstructed)
+
                 decoder_x0_nll = decoder_x0_nll.mean(dim=-1)
 
                 non_zero_timesteps = (timesteps != 0)

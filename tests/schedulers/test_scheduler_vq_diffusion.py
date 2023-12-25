@@ -156,7 +156,7 @@ class VQDiffusionSchedulerTest(SchedulerCommonTest):
             log_q_x_t_given_x_0 = scheduler.q_forward(log_one_hot_x_0, timesteps)
             x_t = scheduler.q_sample(log_q_x_t_given_x_0)
 
-            scheduler.q_posterior_from_paper(log_one_hot_x_0, x_t)
+            scheduler.q_posterior_only(log_one_hot_x_0, x_t)
 
             print("t  ", timesteps)
             print("x_0", x_0)
