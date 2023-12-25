@@ -382,7 +382,7 @@ def train_loop(
                 print_tensor_statistics("kl_loss zeroed zero t ", kl_loss)
 
                 # sum due to each loss item has already been weighted with timesteps_weight
-                kl_loss = kl_loss.sum() * config.kl_loss_weight
+                kl_loss = kl_loss.mean() * config.kl_loss_weight
 
 
                 # L_{0}

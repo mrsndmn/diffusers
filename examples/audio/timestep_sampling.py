@@ -17,6 +17,9 @@ class TimestepsSampler(nn.Module):
         self.strategy = strategy
         self.num_timesteps = num_timesteps
 
+        # used to save device
+        self.register_buffer('dummy_device', torch.zeros([0]))
+
         if strategy == self.SAMPLING_STRATEGY_IMPORTANCE:
             # loss statistic for each timestemp
             self.register_buffer('loss_t_history', torch.zeros(self.num_timesteps))
@@ -25,13 +28,13 @@ class TimestepsSampler(nn.Module):
             self.minimum_history_for_importance_sampling = minimum_history_for_importance_sampling
 
     def sample_uniform(self, batch_size: int):
-        t = torch.randint(0, self.num_timesteps, (batch_size,), device=self.device).long()
+        t = torch.randint(0, self.num_timesteps, (batch_size,), device=self.dummy_device.device).long()
         pt = torch.ones_like(t).float() / self.num_timesteps
         return t, pt
 
     def sample_importance(self, batch_size: int):
         if not (self.loss_t_count > self.minimum_history_for_importance_sampling).all():
-            return self.sample_uniform(batch_size, device=self.device)
+            return self.sample_uniform(batch_size)
 
         Lt_sqrt = torch.sqrt(self.loss_t_history + 1e-10) + 0.0001
         Lt_sqrt[0] = Lt_sqrt[1]  # Overwrite decoder term with L1.
