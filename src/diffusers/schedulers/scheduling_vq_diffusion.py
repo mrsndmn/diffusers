@@ -320,11 +320,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         uniform_noise_x_t_minus_1 = torch.rand(log_probs_x_t_minus_1.shape, device=log_probs_x_t_minus_1.device, generator=None)
         noisy_log_probs_x_t_minus_1 = gumbel_noised(log_probs_x_t_minus_1, uniform_noise=uniform_noise_x_t_minus_1)
-        # x_t_minus_1_sample = noisy_log_probs_x_t_minus_1.argmax(dim=1)
+        x_t_minus_1_sample = noisy_log_probs_x_t_minus_1.argmax(dim=1)
         # assert x_t_minus_1_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_minus_1_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
-        # log_one_hot_x_t_minus_1 = index_to_log_onehot(x_t_minus_1_sample, self.num_embed)
+        log_one_hot_x_t_minus_1 = index_to_log_onehot(x_t_minus_1_sample, self.num_embed)
 
-        log_probas_x_t_given_x_t_minus_1 = self.q_forward_one_timestep(noisy_log_probs_x_t_minus_1, timesteps)
+        log_probas_x_t_given_x_t_minus_1 = self.q_forward_one_timestep(log_one_hot_x_t_minus_1, timesteps)
 
         uniform_noise_x_t = torch.rand(log_probas_x_t_given_x_t_minus_1.shape, device=log_probas_x_t_given_x_t_minus_1.device, generator=None)
         noisy_log_probs_x_t = gumbel_noised(log_probas_x_t_given_x_t_minus_1, uniform_noise=uniform_noise_x_t)
@@ -425,25 +425,22 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_p_x_0_detached = log_p_x_0.detach()
         # log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
         log_onehot_x_0_detached = index_to_log_onehot(log_p_x_0_detached.argmax(dim=1), self.num_embed)
+        q_forward_input = log_onehot_x_0_detached
 
         # calculated x_t
-        log_q_x_t_given_x_0 = self.q_forward(log_onehot_x_0_detached, t) # q(x_t|x_0)
+        log_q_x_t_given_x_0 = self.q_forward(q_forward_input, t) # q(x_t|x_0)
         log_q_x_t_given_x_0 = gumbel_noised(log_q_x_t_given_x_0, uniform_noise=uniform_noise_x_t_given_x_0)
 
-        # x_t_given_x_0 = self.q_sample(log_q_x_t_given_x_0)
-
-        # assert (x_t == x_t_given_x_0).all(), 'x_t sampling is ok'
-
         # todo rem block?
-        log_q_x_t_given_x_0 = log_q_x_t_given_x_0[:,:-1,:]
-        # # oveeride probability for masked tokens `M`
-        log_cumprod_ct = extract(self.log_cumprod_ct, t, log_p_x_0.shape) # ct~
-        ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
-        # ct_cumprod_vector = torch.cat((ct_cumprod_vector, log_one_vector), dim=1)
-        log_q_x_t_given_x_0 = non_mask_tokens*log_q_x_t_given_x_0 + mask_tokens*ct_cumprod_vector
-        log_q_x_t_given_x_0 = torch.cat((log_q_x_t_given_x_0, log_zero_vector), dim=1)
+        # !
+        # log_q_x_t_given_x_0 = log_q_x_t_given_x_0[:,:-1,:]
+        # # overide probability for masked tokens `M`
+        # log_cumprod_ct = extract(self.log_cumprod_ct, t, log_p_x_0.shape) # ct~
+        # ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
+        # log_q_x_t_given_x_0 = non_mask_tokens*log_q_x_t_given_x_0 + mask_tokens*ct_cumprod_vector
+        # log_q_x_t_given_x_0 = torch.cat((log_q_x_t_given_x_0, log_zero_vector), dim=1)
 
-        log_q_x_t_minus_1_given_x_0 = self.q_forward(log_onehot_x_0_detached, t-1) # q(x_{t-1}|x_0)
+        log_q_x_t_minus_1_given_x_0 = self.q_forward(q_forward_input, t-1) # q(x_{t-1}|x_0)
         log_q_x_t_minus_1_given_x_0 = gumbel_noised(log_q_x_t_minus_1_given_x_0, uniform_noise=uniform_noise_x_t_minus_1_given_x_0)
         x_t_minus_1_given_x_0 = log_q_x_t_minus_1_given_x_0.argmax(dim=1)
 
@@ -453,22 +450,13 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_q_x_t_given_x_minus_1 = self.q_forward_one_timestep(log_onehot_x_t_minus_1_given_x_0, t)  # q(x_t|x_{t-1})
 
         # todo rem block?
-        log_q_x_t_given_x_minus_1 = torch.cat((log_q_x_t_given_x_minus_1[:,:-1,:], log_zero_vector), dim=1)
-        log_ct = extract(self.log_ct, t, log_p_x_0.shape)         # ct
-        ct_vector = log_ct.expand(-1, self.num_embed-1, -1)
-        ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
-        log_q_x_t_given_x_minus_1 = non_mask_tokens*log_q_x_t_given_x_minus_1 + mask_tokens*ct_vector
+        # !
+        # log_q_x_t_given_x_minus_1 = torch.cat((log_q_x_t_given_x_minus_1[:,:-1,:], log_zero_vector), dim=1)
+        # log_ct = extract(self.log_ct, t, log_p_x_0.shape)         # ct
+        # ct_vector = log_ct.expand(-1, self.num_embed-1, -1)
+        # ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
+        # log_q_x_t_given_x_minus_1 = non_mask_tokens*log_q_x_t_given_x_minus_1 + mask_tokens*ct_vector
 
-        # # p(x_0 | x_t) / q(x_t | x_0)
-        # p_over_q = log_p_x_0[:,:-1,:] - log_qt
-        # # Does not include a prediction for the masked class as the initial unnoised image cannot be masked.
-        # p_over_q = torch.cat((p_over_q, log_zero_vector), dim=1)
-        # # sum probabilities for dim=1
-        # # print("p_over_q", p_over_q.shape)
-        # # q_log_sum_exp = torch.logsumexp(p_over_q, dim=1, keepdim=True)
-        # # p_over_q = p_over_q - q_log_sum_exp
-
-        # log_qt_extended = torch.cat((log_qt, log_zero_vector), dim=1)
 
         # formula 5
         #                                q(x_{t-1} | x_0)              * q(x_t | x_{t-1})          / q(x_t | x_0)

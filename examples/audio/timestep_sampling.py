@@ -29,8 +29,7 @@ class TimestepsSampler(nn.Module):
 
     def sample_uniform(self, batch_size: int):
         t = torch.randint(0, self.num_timesteps, (batch_size,), device=self.dummy_device.device).long()
-        pt = torch.ones_like(t).float() / self.num_timesteps
-        return t, pt
+        return t
 
     def sample_importance(self, batch_size: int):
         if not (self.loss_t_count > self.minimum_history_for_importance_sampling).all():
@@ -42,9 +41,7 @@ class TimestepsSampler(nn.Module):
 
         t = torch.multinomial(pt_all, num_samples=batch_size, replacement=True)
 
-        pt = pt_all.gather(dim=0, index=t)
-
-        return t, pt
+        return t
 
     def step(self, kl_loss: torch.Tensor, timesteps: torch.Tensor):
         """

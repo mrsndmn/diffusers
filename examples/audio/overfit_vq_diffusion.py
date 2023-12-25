@@ -281,7 +281,7 @@ def train_loop(
             logs['timings/calc_clip_text_embeddings'] = time.perf_counter() - calc_clip_text_embeddings_counter
 
             # Sample a random timestep for each image
-            timesteps, timesteps_weight = timesteps_sampler.sample(bs)
+            timesteps = timesteps_sampler.sample(bs)
 
             # Add noise to the clean images according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
@@ -386,7 +386,6 @@ def train_loop(
 
 
                 # L_{0}
-
                 decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_true_prob_x_t_min_1)
 
                 decoder_x0_nll = decoder_x0_nll.mean(dim=-1)
@@ -394,8 +393,6 @@ def train_loop(
                 decoder_x0_nll[non_zero_timesteps] = 0
                 decoder_x0_nll = decoder_x0_nll * config.decoder_nll_loss_weight
                 print_tensor_statistics("decoder_nll ", decoder_x0_nll)
-
-                result_loss = kl_loss + decoder_x0_nll.mean()
 
                 masked_tokens_count = (noisy_audio_codes == noise_scheduler.mask_class).sum().detach().cpu().item()
                 print("masked_tokens_count", masked_tokens_count)
@@ -410,7 +407,7 @@ def train_loop(
                 print_tensor_statistics("kl_aux ", kl_aux)
                 kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
 
-                result_loss += kl_aux
+                result_loss = kl_loss + decoder_x0_nll.mean() + kl_aux
 
                 logs['timings/calc_loss'] = time.perf_counter() - calc_loss_counter
 
