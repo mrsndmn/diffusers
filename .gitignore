@@ -182,6 +182,7 @@ ddpm-audio-mnist-128
 **/audio_mnist_full/*
 **/audio_mnist_zeros/*
 **/audio_mnist_full_encodec_processed/*
+**/audio_mnist_continuouse_noise_codes/*
 AudioMNIST
 # wandb
 wandb

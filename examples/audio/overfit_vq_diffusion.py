@@ -509,8 +509,6 @@ if __name__ == '__main__':
     audio_mnist_dataset_24khz_processed = datasets.load_from_disk(config.dataset_path)
     print("loaded and casted dataset", datetime.now())
 
-    # librispeech_dummy = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
-
     encodec_model_name = "facebook/encodec_24khz"
 
     encodec_model = EncodecModel.from_pretrained(encodec_model_name)
