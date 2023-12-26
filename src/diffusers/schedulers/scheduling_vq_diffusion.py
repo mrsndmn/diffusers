@@ -481,30 +481,31 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         log_one_vector = torch.zeros(batch_size, 1, 1).type_as(log_onehot_x_t)
         log_zero_vector = torch.log(log_one_vector+1.0e-30).expand(-1, -1, x_t.shape[-1])
 
+        # вероятность из любых x_0 попасть в x_t
         log_qt = self.q_forward(log_onehot_x_t, t)                                  # q(xt|x0)
-        # log_qt = torch.cat((log_qt[:,:-1,:], log_zero_vector), dim=1)
-        log_qt = log_qt[:,:-1,:]
+        log_qt = torch.cat((log_qt[:,:-1,:], log_zero_vector), dim=1)
         log_cumprod_ct = extract(self.log_cumprod_ct, t, log_onehot_x_t.shape)         # ct~
+        # последняя строка Q_t_cummulative
         ct_cumprod_vector = log_cumprod_ct.expand(-1, self.num_embed-1, -1)
-        # ct_cumprod_vector = torch.cat((ct_cumprod_vector, log_one_vector), dim=1)
-        print("log_qt", log_qt.shape)
-        print("ct_cumprod_vector", ct_cumprod_vector.shape)
+        ct_cumprod_vector = torch.cat((ct_cumprod_vector, log_one_vector), dim=1) # [ bs, num_embeds, 1 ]
         log_qt = (~mask)*log_qt + mask*ct_cumprod_vector
 
+        # вероятность из любых x_{t-1} попасть в x_t
         log_qt_one_timestep = self.q_forward_one_timestep(log_onehot_x_t, t)        # q(xt|xt_1)
         log_qt_one_timestep = torch.cat((log_qt_one_timestep[:,:-1,:], log_zero_vector), dim=1)
         log_ct = extract(self.log_ct, t, log_p_x_0.shape)         # ct
+        # последняя строка Q_t
         ct_vector = log_ct.expand(-1, self.num_embed-1, -1)
-        ct_vector = torch.cat((ct_vector, log_one_vector), dim=1)
+        ct_vector = torch.cat((ct_vector, log_one_vector), dim=1) # [ bs, num_embeds, 1 ]
         log_qt_one_timestep = (~mask)*log_qt_one_timestep + mask*ct_vector
 
-        q = log_p_x_0[:,:-1,:] - log_qt
+        q = log_p_x_0[:,:-1,:]
         q = torch.cat((q, log_zero_vector), dim=1)
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
         q = q - q_log_sum_exp
 
         # for t=0 masking will be made later, here wi will ignore it
-        log_EV_xtmin_given_xt_given_xstart = self.q_forward(q, t-1) + log_qt_one_timestep + q_log_sum_exp
+        log_EV_xtmin_given_xt_given_xstart = self.q_forward(q, t-1) + log_qt_one_timestep - log_qt
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
 
     def q_posterior(self, log_p_x_0, x_t, t):

@@ -282,6 +282,7 @@ def train_loop(
 
             # Sample a random timestep for each image
             timesteps = timesteps_sampler.sample(bs)
+            # timesteps = torch.zeros([bs]).to(audio_codes.device).to(torch.long)
 
             # Add noise to the clean images according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
@@ -386,7 +387,8 @@ def train_loop(
 
 
                 # L_{0}
-                decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_true_prob_x_t_min_1)
+                # decoder_x0_nll = F.cross_entropy(audio_codes, log_model_prob_x_t_min_1)
+                decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_model_prob_x_t_min_1)
 
                 decoder_x0_nll = decoder_x0_nll.mean(dim=-1)
 
@@ -402,6 +404,8 @@ def train_loop(
                 log_one_hot_audio_codes_no_mask = log_one_hot_audio_codes[:, :-1, :]
                 log_x0_reconstructed_no_mask = log_x0_reconstructed[:,:-1,:]
                 assert log_one_hot_audio_codes_no_mask.shape == log_x0_reconstructed_no_mask.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_no_mask.shape} != {log_x0_reconstructed_no_mask.shape}"
+
+                # log_x0_reconstructed_no_mask - torch.logsumexp(log_x0_reconstructed_no_mask, dim=1, keep_dim=True)
                 kl_aux = multinomial_kl(log_one_hot_audio_codes_no_mask, log_x0_reconstructed_no_mask)
                 kl_aux = kl_aux.mean(dim=-1)
                 print_tensor_statistics("kl_aux ", kl_aux)

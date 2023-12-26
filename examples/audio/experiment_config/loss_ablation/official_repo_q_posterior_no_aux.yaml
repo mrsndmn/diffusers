@@ -1,4 +1,4 @@
-experiment_name: "q_posterior_official_repo_no_auxiliary_loss"
+experiment_name: "q_posterior_official_repo_no_auxiliary_loss_late_divide"
 q_posterior_version: Q_POSTERIOR_VERSION_OFFICIAL_REPO
 auxiliary_loss_weight: 0.00
 kl_loss_weight: 1.0
