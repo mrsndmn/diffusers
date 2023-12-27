@@ -21,4 +21,4 @@ for item in tqdm(noisy_codes_dataset):
     Q_transitioning[timestep, noisy_audio_codes, clean_audio_codes] += 1
 
 
-torch.save(Q_transitioning, 'Q_transitioning_raw.pt')
+torch.save(Q_transitioning, 'Q_transitioning_raw.ptch')
