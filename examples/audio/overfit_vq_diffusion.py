@@ -12,11 +12,17 @@ import time
 import yaml
 
 from pathlib import Path
+
+# todo remove hardcode
+if torch.backends.mps.is_available():
+    sys.path.insert(0, '/Users/d.tarasov/workspace/hse/frechet-audio-distance')
+    sys.path.insert(0, '/Users/d.tarasov/workspace/hse/diffusers/src')
+    sys.path.insert(0, '/Users/d.tarasov/workspace/hse/transformers/src')
+else:
+    sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src')
+    sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/transformers/src')
+
 from frechet_audio_distance import FrechetAudioDistance
-
-sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src')
-sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/transformers/src')
-
 import os
 import torchaudio
 
@@ -524,7 +530,12 @@ if __name__ == '__main__':
     model = Transformer2DModel(**model_kwargs)
     assert model.is_input_continuous == False, 'transformer is discrete'
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+    else:
+        device = 'cpu'
     # device = 'cpu'
 
     noise_scheduler = VQDiffusionScheduler(
