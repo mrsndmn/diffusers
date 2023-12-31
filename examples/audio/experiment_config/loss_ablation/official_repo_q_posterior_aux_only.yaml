@@ -1,0 +1,4 @@
+experiment_name: "q_posterior_official_repo_aux_only"
+auxiliary_loss_weight: 1.0
+kl_loss_weight: 0.0
+decoder_nll_loss_weight: 0.0

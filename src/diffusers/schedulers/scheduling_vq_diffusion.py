@@ -167,6 +167,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # By convention, the index for the mask class is the last class index
         self.mask_class = self.num_embed - 1
 
+        self.alpha_cum_start = alpha_cum_start
+        self.alpha_cum_end = alpha_cum_end
+        self.gamma_cum_start = gamma_cum_start
+        self.gamma_cum_end = gamma_cum_end
+
         at, att = alpha_schedules(num_train_timesteps, alpha_cum_start=alpha_cum_start, alpha_cum_end=alpha_cum_end)
         ct, ctt = gamma_schedules(num_train_timesteps, gamma_cum_start=gamma_cum_start, gamma_cum_end=gamma_cum_end)
 
@@ -678,3 +683,225 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         q = torch.cat((q, c), dim=1)
 
         return q
+
+
+class VQDiffusionDenseScheduler(SchedulerMixin, ConfigMixin):
+    # Без маскированных токенов
+    # Создается из заранее вычисленных
+    # Матриц перехода
+
+    order = 1
+
+    @register_to_config
+    def __init__(
+        self,
+        q_transition_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
+        q_transition_cummulative_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
+        device='cpu',
+    ):
+
+        self.num_train_timesteps = q_transition_martices.shape[0]
+        self.num_embed = q_transition_martices.shape[1]
+        assert q_transition_martices.shape[1] == q_transition_martices.shape[2], 'q_transition_martices is square'
+
+        assert q_transition_martices.shape == q_transition_cummulative_martices.shape, f'q_transitioning matricies shapes are different: {q_transition_martices.shape} != {q_transition_cummulative_martices.shape}'
+
+        # [ num_timesteps, num_classes, num_classes ]
+        self.q_transition_martices = q_transition_martices
+        self.q_transition_cummulative_martices = q_transition_cummulative_martices
+
+        return
+
+    def set_timesteps(self, num_inference_steps: int, device: Union[str, torch.device] = None):
+        raise NotImplemented
+
+    def add_noise(
+        self,
+        # with mask probas
+        log_one_hot_x_0_probas: torch.LongTensor, # (`torch.LongTensor` of shape `(batch size, num_classes, num latent pixels)`):
+        timesteps: torch.IntTensor, # [ batch_size ]
+
+    ) -> torch.LongTensor:
+
+        # def q_sample(self, log_x_start, t):                 # diffusion step, q(xt|x0) and sample xt
+        #
+        # log_x_start can be onehot or not
+
+        # x_{t-1}
+        log_probs_x_t = self.q_forward(log_one_hot_x_0_probas, timesteps)
+
+        uniform_noise_x_t = torch.rand(log_probs_x_t.shape, device=log_probs_x_t.device, generator=None)
+        noisy_log_probs_x_t = gumbel_noised(log_probs_x_t, uniform_noise=uniform_noise_x_t)
+        x_t_sample = noisy_log_probs_x_t.argmax(dim=1)
+
+        assert x_t_sample.shape == torch.Size([log_one_hot_x_0_probas.shape[0], log_one_hot_x_0_probas.shape[-1]]), f"sample.shape={x_t_sample.shape}, log_one_hot_x_0_probas.shape={log_one_hot_x_0_probas.shape}"
+
+        return {
+            "sample": x_t_sample,
+        }
+
+    # q( x_t | x_0 ) -- formula (4) in paper https://arxiv.org/pdf/2111.14822.pdf
+    def q_forward(
+        self,
+        log_one_hot_x_0_probas: torch.LongTensor, # (`torch.LongTensor` of shape `(batch size, num_classes, num latent pixels)`):
+        timesteps: torch.IntTensor, # [ batch_size ]
+    ):
+        assert len(log_one_hot_x_0_probas.shape) == 3, f'shape expected to be: [bs, num_classes, num latent pixels], but goot: {log_one_hot_x_0_probas.shape}'
+        assert len(timesteps.shape) == 1, f'only one dim for timesteps: {timesteps}'
+
+        assert timesteps.shape[0] == log_one_hot_x_0_probas.shape[0], 'timestemps batch size doesnt match to sample batch size'
+
+        timesteps = timesteps.clone()
+        timesteps[timesteps < 0] = 0
+        assert timesteps.min() >= 0, 'min timestep is zero'
+
+        expected_dim_1 = self.num_embed
+        # log_one_hot_x_0_probas [ bs, num_embed, sequence_length ]
+        assert log_one_hot_x_0_probas.shape[1] == expected_dim_1, f'log_one_hot_x_0_probas.shape[1] expected to be {expected_dim_1}, but got: {log_one_hot_x_0_probas.shape}'
+
+        cummulative_matrix = self.q_transition_cummulative_martices[timesteps]
+        # cummulative_matricies =
+
+        one_hot_x_0_probas = torch.exp(log_one_hot_x_0_probas)
+
+        log_probs = torch.log(torch.bmm(cummulative_matrix, one_hot_x_0_probas))
+
+        assert log_probs.shape == log_one_hot_x_0_probas.shape, f"{log_probs.shape} != {log_one_hot_x_0_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
+
+        return log_probs
+
+    def q_transposed_forward(
+        self,
+        log_one_hot_x_t_probas: torch.LongTensor, # (`torch.LongTensor` of shape `(batch size, num_classes, num latent pixels)`):
+        timesteps: torch.IntTensor, # [ batch_size ]
+    ):
+        # получаем не вероятность из x_0 получить распределение x_t,
+        # а получаем распределенеие x_0 из которых можно прийти в конкретный x_t
+        assert len(log_one_hot_x_t_probas.shape) == 3, f'shape expected to be: [bs, num_classes, num latent pixels], but goot: {log_one_hot_x_t_probas.shape}'
+        assert len(timesteps.shape) == 1, f'only one dim for timesteps: {timesteps}'
+
+        assert timesteps.shape[0] == log_one_hot_x_t_probas.shape[0], 'timestemps batch size doesnt match to sample batch size'
+
+        timesteps = timesteps.clone()
+        timesteps[timesteps < 0] = 0
+        assert timesteps.min() >= 0, 'min timestep is zero'
+
+        expected_dim_1 = self.num_embed
+        # log_one_hot_x_0_probas [ bs, num_embed, sequence_length ]
+        assert log_one_hot_x_t_probas.shape[1] == expected_dim_1, f'log_one_hot_x_t_probas.shape[1] expected to be {expected_dim_1}, but got: {log_one_hot_x_t_probas.shape}'
+
+        cummulative_matrix = self.q_transition_cummulative_martices[timesteps]
+        cummulative_matrix_transposed = cummulative_matrix.permute(0, 2, 1)
+        # cummulative_matricies =
+
+        one_hot_x_0_probas = torch.exp(log_one_hot_x_t_probas)
+
+        log_probs = torch.log(torch.bmm(cummulative_matrix_transposed, one_hot_x_0_probas))
+
+        assert log_probs.shape == log_one_hot_x_t_probas.shape, f"{log_probs.shape} != {log_one_hot_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_t_probas shape"
+
+        return log_probs
+
+
+    def q_forward_one_timestep(self, log_x_t_probas, timesteps):
+        # получаем не вероятность из x_0 получить распределение x_t,
+        # а получаем распределенеие x_0 из которых можно прийти в конкретный x_t
+
+        timesteps = timesteps.clone()
+        timesteps[timesteps < 0] = 0
+        assert timesteps.min() >= 0, 'min timestep is greater or equal zero'
+
+        transition_matrix = self.q_transition_martices[timesteps]
+        transition_matrix_transposed = transition_matrix.permute(0, 2, 1)
+
+        x_t_probas = torch.exp(log_x_t_probas)
+        log_probs = torch.log(torch.bmm(transition_matrix_transposed, x_t_probas))
+
+        assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
+
+        return log_probs
+
+    def q_transposed_forward_one_timestep(self, log_x_t_probas, timesteps):
+        # timesteps = (timesteps + (self.num_train_timesteps + 1))%(self.num_train_timesteps + 1)
+        timesteps = timesteps.clone()
+        timesteps[timesteps < 0] = 0
+        assert timesteps.min() >= 0, 'min timestep is greater or equal zero'
+
+        transition_matrix = self.q_transition_martices[timesteps]
+        x_t_probas = torch.exp(log_x_t_probas)
+
+        log_probs = torch.log(torch.bmm(transition_matrix, x_t_probas))
+
+        assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
+
+        return log_probs
+
+    # returns Long Tensor on discrete noisy input with dims [ bs, num latent pixels ]
+    # def q_posterior_orig(self, log_x_start, log_x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
+    def q_posterior(self, log_p_x_0, x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
+        # notice that log_x_t is onehot
+        assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps
+
+        log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
+
+        log_qt = self.q_transposed_forward(log_onehot_x_t, t) # q(xt|x0)
+
+        log_qt_one_timestep = self.q_transposed_forward_one_timestep(log_onehot_x_t, t)        # q(xt|xt_1)
+
+        q = log_p_x_0 - log_qt
+        q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
+        q = q - q_log_sum_exp
+
+        # for t=0 masking will be made later, here wi will ignore it
+        log_EV_xtmin_given_xt_given_xstart = self.q_forward(q, t-1) + log_qt_one_timestep + q_log_sum_exp
+        return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
+
+    def step(
+        self,
+        model_output: torch.FloatTensor,
+        timestep: torch.long,
+        sample: torch.LongTensor,
+        generator: Optional[torch.Generator] = None,
+        return_dict: bool = True,
+    ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
+        """
+        Predict the sample from the previous timestep by the reverse transition distribution. See
+        [`~VQDiffusionScheduler.q_posterior`] for more details about how the distribution is computer.
+
+        Args:
+            log_p_x_0: (`torch.FloatTensor` of shape `(batch size, num classes - 1, num latent pixels)`):
+                The log probabilities for the predicted classes of the initial latent pixels. Does not include a
+                prediction for the masked class as the initial unnoised image cannot be masked.
+            t (`torch.long`):
+                The timestep that determines which transition matrices are used.
+            x_t (`torch.LongTensor` of shape `(batch size, num latent pixels)`):
+                The classes of each latent pixel at time `t`.
+            generator (`torch.Generator`, or `None`):
+                A random number generator for the noise applied to `p(x_{t-1} | x_t)` before it is sampled from.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~schedulers.scheduling_vq_diffusion.VQDiffusionSchedulerOutput`] or
+                `tuple`.
+
+        Returns:
+            [`~schedulers.scheduling_vq_diffusion.VQDiffusionSchedulerOutput`] or `tuple`:
+                If return_dict is `True`, [`~schedulers.scheduling_vq_diffusion.VQDiffusionSchedulerOutput`] is
+                returned, otherwise a tuple is returned where the first element is the sample tensor.
+        """
+
+        batch_size = model_output.shape[0]
+        timestep_t = torch.tensor([timestep], dtype=torch.long, device=model_output.device)
+        timestep_t = timestep_t.repeat(batch_size)
+
+        if timestep == 0:
+            log_p_x_t_min_1 = model_output
+        else:
+            log_p_x_t_min_1 = self.q_posterior(model_output, sample, timestep_t)
+
+        log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1, generator)
+
+        x_t_min_1 = log_p_x_t_min_1.argmax(dim=1)
+
+        if not return_dict:
+            return (x_t_min_1,)
+
+        return VQDiffusionSchedulerOutput(prev_sample=x_t_min_1, prev_sample_log_probas=log_p_x_t_min_1)

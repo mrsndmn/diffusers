@@ -159,11 +159,14 @@ class VQDiffusionSchedulerTest(SchedulerCommonTest):
             # scheduler.q_posterior_only(log_one_hot_x_0, x_t)
             raise NotImplemented
 
-            print("t  ", timesteps)
-            print("x_0", x_0)
-            print("x_t", x_t)
-
-
-
         return
 
+    def test_dense_q_transposed(self):
+        n_vectors = 10
+        n_train_timesteps = 100
+
+        original_scheduler = VQDiffusionScheduler(n_vectors, n_train_timesteps)
+
+        q_transition_martices = 
+        q_transition_cummulative_martices = 
+        dense_scheduler = VQDiffusionDenseScheduler(n_vectors, n_train_timesteps)
