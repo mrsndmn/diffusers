@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
 
-from diffusers import VQDiffusionScheduler
-from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot
+# from diffusers import
+from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, VQDiffusionDenseScheduler, VQDiffusionDenseUniformMaskScheduler, VQDiffusionScheduler
 
 from .test_schedulers import SchedulerCommonTest
 
@@ -165,8 +165,58 @@ class VQDiffusionSchedulerTest(SchedulerCommonTest):
         n_vectors = 10
         n_train_timesteps = 100
 
+        dense_scheduler = VQDiffusionDenseUniformMaskScheduler(
+            num_vec_classes=n_vectors,
+            num_train_timesteps=n_train_timesteps,
+        )
+
+
+        batch_size = n_train_timesteps
+        assert batch_size <= n_train_timesteps
+        sequence_length = 128
+        timesteps = torch.arange(0, batch_size)
+        log_one_hot_x_0_probas = torch.log(torch.zeros([batch_size, n_vectors, sequence_length]) + 1e-20)
+
+        log_one_hot_x_0_probas_noisy = dense_scheduler.add_noise(log_one_hot_x_0_probas, timesteps)
+        log_one_hot_x_0_probas_noisy = log_one_hot_x_0_probas_noisy['sample']
+
+        expected_size = torch.Size([batch_size, sequence_length])
+        assert expected_size == log_one_hot_x_0_probas_noisy.shape, f"{expected_size} != {log_one_hot_x_0_probas_noisy.shape}"
+
+        assert log_one_hot_x_0_probas_noisy.dtype == torch.long, f"log_one_hot_x_0_probas_noisy.dtype == {log_one_hot_x_0_probas_noisy.dtype}"
+
+        assert log_one_hot_x_0_probas_noisy.min().item() >= 0
+        assert log_one_hot_x_0_probas_noisy.max().item() < n_vectors
+
+        return
+
+    def test_dense_q_transposed_q_forward(self):
+        n_vectors = 10
+        n_train_timesteps = 10
+
         original_scheduler = VQDiffusionScheduler(n_vectors, n_train_timesteps)
 
-        q_transition_martices = 
-        q_transition_cummulative_martices = 
-        dense_scheduler = VQDiffusionDenseScheduler(n_vectors, n_train_timesteps)
+        dense_scheduler = VQDiffusionDenseUniformMaskScheduler(
+            num_vec_classes=n_vectors,
+            num_train_timesteps=n_train_timesteps,
+        )
+
+        batch_size = n_train_timesteps
+        assert batch_size <= n_train_timesteps
+        sequence_length = n_vectors
+        timesteps = torch.arange(0, batch_size)
+        eye = torch.eye(sequence_length).unsqueeze(0).repeat(batch_size, 1, 1)
+        log_one_hot_x_0_probas = torch.log(eye + 1e-20)
+        print("log_one_hot_x_0_probas", log_one_hot_x_0_probas.shape)
+
+        log_one_hot_x_0_probas_orig_forward = original_scheduler.q_forward(log_one_hot_x_0_probas, timesteps)
+        log_one_hot_x_0_probas_dense_forward = dense_scheduler.q_forward(log_one_hot_x_0_probas, timesteps)
+
+        # ignore last column!
+        one_hot_x_0_probas_orig_forward = torch.exp(log_one_hot_x_0_probas_orig_forward)[:, :-1, :]
+        one_hot_x_0_probas_dense_forward = torch.exp(log_one_hot_x_0_probas_dense_forward)[:, :-1, :]
+
+        assert one_hot_x_0_probas_orig_forward.shape == one_hot_x_0_probas_dense_forward.shape, f"{log_one_hot_x_0_probas_orig_forward.shape} == {log_one_hot_x_0_probas_dense_forward.shape}"
+        assert torch.allclose(one_hot_x_0_probas_orig_forward, one_hot_x_0_probas_dense_forward, atol=0.1), f'all values for dense vq scheduler are the same as original scheduler'
+
+        return

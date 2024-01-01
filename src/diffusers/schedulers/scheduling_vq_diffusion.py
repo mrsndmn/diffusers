@@ -17,6 +17,7 @@ from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from ..configuration_utils import ConfigMixin, register_to_config
@@ -685,20 +686,18 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return q
 
 
-class VQDiffusionDenseScheduler(SchedulerMixin, ConfigMixin):
+class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
     # Без маскированных токенов
     # Создается из заранее вычисленных
     # Матриц перехода
-
-    order = 1
 
     @register_to_config
     def __init__(
         self,
         q_transition_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
         q_transition_cummulative_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
-        device='cpu',
     ):
+        super().__init__()
 
         self.num_train_timesteps = q_transition_martices.shape[0]
         self.num_embed = q_transition_martices.shape[1]
@@ -707,8 +706,8 @@ class VQDiffusionDenseScheduler(SchedulerMixin, ConfigMixin):
         assert q_transition_martices.shape == q_transition_cummulative_martices.shape, f'q_transitioning matricies shapes are different: {q_transition_martices.shape} != {q_transition_cummulative_martices.shape}'
 
         # [ num_timesteps, num_classes, num_classes ]
-        self.q_transition_martices = q_transition_martices
-        self.q_transition_cummulative_martices = q_transition_cummulative_martices
+        self.register_buffer('q_transition_martices', q_transition_martices.float())
+        self.register_buffer('q_transition_cummulative_martices', q_transition_cummulative_martices.float())
 
         return
 
@@ -764,6 +763,8 @@ class VQDiffusionDenseScheduler(SchedulerMixin, ConfigMixin):
 
         one_hot_x_0_probas = torch.exp(log_one_hot_x_0_probas)
 
+        print("cummulative_matrix", cummulative_matrix.shape, cummulative_matrix.dtype, "one_hot_x_0_probas is nan", one_hot_x_0_probas.isnan().any(), "cummulative_matrix min", cummulative_matrix.min(), "cummulative_matrix max", cummulative_matrix.max())
+        print("one_hot_x_0_probas", one_hot_x_0_probas.shape, one_hot_x_0_probas.dtype, "one_hot_x_0_probas is nan", one_hot_x_0_probas.isnan().any(), "one_hot_x_0_probas min", one_hot_x_0_probas.min(), "one_hot_x_0_probas max", one_hot_x_0_probas.max())
         log_probs = torch.log(torch.bmm(cummulative_matrix, one_hot_x_0_probas))
 
         assert log_probs.shape == log_one_hot_x_0_probas.shape, f"{log_probs.shape} != {log_one_hot_x_0_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
@@ -905,3 +906,51 @@ class VQDiffusionDenseScheduler(SchedulerMixin, ConfigMixin):
             return (x_t_min_1,)
 
         return VQDiffusionSchedulerOutput(prev_sample=x_t_min_1, prev_sample_log_probas=log_p_x_t_min_1)
+
+
+class VQDiffusionDenseUniformMaskScheduler(VQDiffusionDenseScheduler):
+
+    def __init__(self,
+        num_vec_classes: int,
+        num_train_timesteps: int = 100,
+        alpha_cum_start: float = 0.99999,
+        alpha_cum_end: float = 0.000009,
+        gamma_cum_start: float = 0.000009,
+        gamma_cum_end: float = 0.99999,
+    ):
+
+        self.num_embed = num_vec_classes
+
+        # By convention, the index for the mask class is the last class index
+        self.mask_class = self.num_embed - 1
+        self.num_train_timesteps = num_train_timesteps
+
+        self.alpha_cum_start = alpha_cum_start
+        self.alpha_cum_end = alpha_cum_end
+        self.gamma_cum_start = gamma_cum_start
+        self.gamma_cum_end = gamma_cum_end
+
+
+        at, att = alpha_schedules(num_train_timesteps, alpha_cum_start=alpha_cum_start, alpha_cum_end=alpha_cum_end)
+
+        num_non_mask_classes = self.num_embed
+        bt = (1 - at) / num_non_mask_classes
+        btt = (1 - att) / num_non_mask_classes
+
+        at = torch.tensor(at).unsqueeze(1).unsqueeze(2)
+        bt = torch.tensor(bt).unsqueeze(1).unsqueeze(2)
+
+        att = torch.tensor(att).unsqueeze(1).unsqueeze(2)[:num_train_timesteps]
+        btt = torch.tensor(btt).unsqueeze(1).unsqueeze(2)[:num_train_timesteps]
+
+        alpha_eye_matrix = torch.eye(num_vec_classes).unsqueeze(0).repeat(num_train_timesteps, 1, 1)
+        betta_ones_matrix = torch.ones([ num_train_timesteps, num_vec_classes, num_vec_classes ])
+
+        # formula (7) in https://arxiv.org/pdf/2111.14822.pdf
+        q_transition_martices = betta_ones_matrix * bt + alpha_eye_matrix * at
+        q_transition_cummulative_martices = betta_ones_matrix * btt + alpha_eye_matrix * att
+
+        super().__init__(
+            q_transition_martices=q_transition_martices,
+            q_transition_cummulative_martices=q_transition_cummulative_martices,
+        )
