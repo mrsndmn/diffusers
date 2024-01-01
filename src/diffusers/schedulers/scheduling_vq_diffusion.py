@@ -696,6 +696,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         self,
         q_transition_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
         q_transition_cummulative_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
+        device='cpu',
     ):
         super().__init__()
 
@@ -706,8 +707,8 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         assert q_transition_martices.shape == q_transition_cummulative_martices.shape, f'q_transitioning matricies shapes are different: {q_transition_martices.shape} != {q_transition_cummulative_martices.shape}'
 
         # [ num_timesteps, num_classes, num_classes ]
-        self.register_buffer('q_transition_martices', q_transition_martices.float())
-        self.register_buffer('q_transition_cummulative_martices', q_transition_cummulative_martices.float())
+        self.register_buffer('q_transition_martices', q_transition_martices.float().to(device))
+        self.register_buffer('q_transition_cummulative_martices', q_transition_cummulative_martices.float().to(device))
 
         return
 
@@ -917,6 +918,7 @@ class VQDiffusionDenseUniformMaskScheduler(VQDiffusionDenseScheduler):
         alpha_cum_end: float = 0.000009,
         gamma_cum_start: float = 0.000009,
         gamma_cum_end: float = 0.99999,
+        device='cpu'
     ):
 
         self.num_embed = num_vec_classes
@@ -953,4 +955,5 @@ class VQDiffusionDenseUniformMaskScheduler(VQDiffusionDenseScheduler):
         super().__init__(
             q_transition_martices=q_transition_martices,
             q_transition_cummulative_martices=q_transition_cummulative_martices,
+            device=device,
         )

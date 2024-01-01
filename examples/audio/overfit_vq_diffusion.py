@@ -45,7 +45,7 @@ from timestep_sampling import TimestepsSampler
 
 from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
 
-from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical
+from diffusers.schedulers.scheduling_vq_diffusion import VQDiffusionDenseScheduler, index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseUniformMaskScheduler
 
 NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
@@ -93,6 +93,8 @@ class TrainingConfig:
     decoder_nll_loss_weight = 1.0
 
     timesteps_sampling = TimestepsSampler.SAMPLING_STRATEGY_UNIFORM
+
+    noise_scheduler = "dense_masked_uniform" # dense_masked_uniform | optimal_masked_uniform | dense_trained
 
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
@@ -215,7 +217,7 @@ def train_loop(
     clip_tokenizer: AutoTokenizer,
     clip_text_model: CLIPTextModel,
     encodec_model: EncodecModel,
-    noise_scheduler: VQDiffusionScheduler,
+    noise_scheduler: VQDiffusionScheduler|VQDiffusionDenseUniformMaskScheduler,
     timesteps_sampler: TimestepsSampler,
     optimizer,
     train_dataloader,
@@ -332,7 +334,10 @@ def train_loop(
                     "t":         timesteps,
                 }
 
-                log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_approximate_args)
+                if isinstance(noise_scheduler, VQDiffusionDenseUniformMaskScheduler):
+                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_approximate_args)
+                else:
+                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_approximate_args)
 
                 print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
 
@@ -345,7 +350,11 @@ def train_loop(
                     "t":         timesteps,
                 }
 
-                log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_true_args)
+                if isinstance(noise_scheduler, VQDiffusionDenseUniformMaskScheduler):
+                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_true_args)
+                else:
+                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_true_args)
+
 
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
 
@@ -538,7 +547,12 @@ if __name__ == '__main__':
         device = 'cpu'
     # device = 'cpu'
 
-    noise_scheduler = VQDiffusionScheduler(
+    if config.noise_scheduler == "dense_masked_uniform":
+        noise_scheduler_class = VQDiffusionDenseUniformMaskScheduler
+    else:
+        noise_scheduler_class = VQDiffusionDenseScheduler
+
+    noise_scheduler = noise_scheduler_class(
         num_vec_classes=model_kwargs['num_vector_embeds'],
         num_train_timesteps=NUM_TRAIN_TIMESTEPS,
         device=device,
