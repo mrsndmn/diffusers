@@ -770,7 +770,10 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         print("cummulative_matrix", cummulative_matrix.shape, cummulative_matrix.dtype, "cummulative_matrix is nan", cummulative_matrix.isnan().any(), "cummulative_matrix min", cummulative_matrix.min(), "cummulative_matrix max", cummulative_matrix.max())
         print("one_hot_x_0_probas", one_hot_x_0_probas.shape, one_hot_x_0_probas.dtype, "one_hot_x_0_probas is nan", one_hot_x_0_probas.isnan().any(), "one_hot_x_0_probas min", one_hot_x_0_probas.min(), "one_hot_x_0_probas max", one_hot_x_0_probas.max())
-        log_probs = torch.log(torch.bmm(cummulative_matrix, one_hot_x_0_probas))
+        log_probs = torch.log(torch.bmm(cummulative_matrix, one_hot_x_0_probas) + 1e-20)
+
+        if log_probs.isnan().any():
+            raise ValueError("nan after log")
 
         assert log_probs.shape == log_one_hot_x_0_probas.shape, f"{log_probs.shape} != {log_one_hot_x_0_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
@@ -804,7 +807,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         one_hot_x_0_probas = torch.exp(log_one_hot_x_t_probas)
 
-        log_probs = torch.log(torch.bmm(cummulative_matrix_transposed, one_hot_x_0_probas))
+        log_probs = torch.log(torch.bmm(cummulative_matrix_transposed, one_hot_x_0_probas) + 1e-20)
 
         assert log_probs.shape == log_one_hot_x_t_probas.shape, f"{log_probs.shape} != {log_one_hot_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_t_probas shape"
 
@@ -822,7 +825,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         transition_matrix = self.q_transition_martices[timesteps]
 
         x_t_probas = torch.exp(log_x_t_probas)
-        log_probs = torch.log(torch.bmm(transition_matrix, x_t_probas))
+        log_probs = torch.log(torch.bmm(transition_matrix, x_t_probas) + 1e-20)
 
         assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
@@ -840,7 +843,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         transition_matrix_transposed = transition_matrix.permute(0, 2, 1)
         x_t_probas = torch.exp(log_x_t_probas)
 
-        log_probs = torch.log(torch.bmm(transition_matrix_transposed, x_t_probas))
+        log_probs = torch.log(torch.bmm(transition_matrix_transposed, x_t_probas) + 1e-20)
 
         assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
