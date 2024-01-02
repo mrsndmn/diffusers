@@ -792,6 +792,8 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         timesteps[timesteps < 0] = 0
         assert timesteps.min() >= 0, 'min timestep is zero'
 
+        print("q_transposed_forward")
+
         expected_dim_1 = self.num_embed
         # log_one_hot_x_0_probas [ bs, num_embed, sequence_length ]
         assert log_one_hot_x_t_probas.shape[1] == expected_dim_1, f'log_one_hot_x_t_probas.shape[1] expected to be {expected_dim_1}, but got: {log_one_hot_x_t_probas.shape}'
@@ -832,6 +834,8 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         timesteps[timesteps < 0] = 0
         assert timesteps.min() >= 0, 'min timestep is greater or equal zero'
 
+        print("q_transposed_forward_one_timestep")
+
         transition_matrix = self.q_transition_martices[timesteps]
         transition_matrix_transposed = transition_matrix.permute(0, 2, 1)
         x_t_probas = torch.exp(log_x_t_probas)
@@ -850,13 +854,23 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         log_onehot_x_t = index_to_log_onehot(x_t, self.num_embed)
 
+        def debug_tensor(name, tens):
+            print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+
+
+        print("q_posterior")
+        debug_tensor("log_onehot_x_t", log_onehot_x_t)
         log_qt = self.q_transposed_forward(log_onehot_x_t, t) # q(xt|x0)
+        debug_tensor("log_qt", log_qt)
 
         log_qt_one_timestep = self.q_transposed_forward_one_timestep(log_onehot_x_t, t)        # q(xt|xt_1)
+        debug_tensor("log_qt_one_timestep", log_qt_one_timestep)
 
         q = log_p_x_0 - log_qt
+        debug_tensor("q", q)
         q_log_sum_exp = torch.logsumexp(q, dim=1, keepdim=True)
         q = q - q_log_sum_exp
+        debug_tensor("q_norm", q)
 
         # for t=0 masking will be made later, here wi will ignore it
         log_EV_xtmin_given_xt_given_xstart = self.q_forward(q, t-1) + log_qt_one_timestep + q_log_sum_exp
