@@ -537,7 +537,7 @@ if __name__ == '__main__':
         "cross_attention_dim": clip_text_model.config.hidden_size,
         "attention_head_dim": 128,
         "num_attention_heads": 8,
-        "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK + 1,
+        "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK,
         "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
         "sample_size": width,
         "height": height,
