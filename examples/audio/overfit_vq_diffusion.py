@@ -403,6 +403,8 @@ def train_loop(
                 kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
 
                 result_loss = kl_loss + decoder_x0_nll.mean() + kl_aux
+                if result_loss.isnan().any():
+                    raise ValueError("result_loss contains nan")
 
                 logs['timings/calc_loss'] = time.perf_counter() - calc_loss_counter
 
