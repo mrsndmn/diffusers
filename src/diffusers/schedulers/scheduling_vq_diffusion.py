@@ -765,9 +765,10 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         cummulative_matrix = self.q_transition_cummulative_martices[timesteps]
         # cummulative_matricies =
 
+        print("log_one_hot_x_0_probas", log_one_hot_x_0_probas.shape, log_one_hot_x_0_probas.dtype, "log_one_hot_x_0_probas is nan", log_one_hot_x_0_probas.isnan().any(), "log_one_hot_x_0_probas min", log_one_hot_x_0_probas.min(), "log_one_hot_x_0_probas max", log_one_hot_x_0_probas.max())
         one_hot_x_0_probas = torch.exp(log_one_hot_x_0_probas)
 
-        print("cummulative_matrix", cummulative_matrix.shape, cummulative_matrix.dtype, "one_hot_x_0_probas is nan", cummulative_matrix.isnan().any(), "cummulative_matrix min", cummulative_matrix.min(), "cummulative_matrix max", cummulative_matrix.max())
+        print("cummulative_matrix", cummulative_matrix.shape, cummulative_matrix.dtype, "cummulative_matrix is nan", cummulative_matrix.isnan().any(), "cummulative_matrix min", cummulative_matrix.min(), "cummulative_matrix max", cummulative_matrix.max())
         print("one_hot_x_0_probas", one_hot_x_0_probas.shape, one_hot_x_0_probas.dtype, "one_hot_x_0_probas is nan", one_hot_x_0_probas.isnan().any(), "one_hot_x_0_probas min", one_hot_x_0_probas.min(), "one_hot_x_0_probas max", one_hot_x_0_probas.max())
         log_probs = torch.log(torch.bmm(cummulative_matrix, one_hot_x_0_probas))
 
