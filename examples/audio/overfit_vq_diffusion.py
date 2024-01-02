@@ -96,8 +96,8 @@ class TrainingConfig:
 
     noise_scheduler = "dense_trained" # dense_masked_uniform | optimized_masked_uniform | dense_trained
     # used for dense_trained
-    noise_scheduler_q_transition_martices_path = "./Q_transitioning_raw.pth"
-    noise_scheduler_q_transition_cummulative_martices_path = "./Q_transitioning_cumulative_raw.pth"
+    noise_scheduler_q_transition_martices_path = "./Q_transitioning_normed.pth"
+    noise_scheduler_q_transition_cummulative_martices_path = "./Q_transitioning_cumulative_norm.pth"
 
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
