@@ -321,6 +321,10 @@ def train_loop(
                     return_dict=False,
                 )[0]
                 logs['timings/model_inference'] = time.perf_counter() - model_inference_counter
+                print_tensor_statistics("log_x0_reconstructed model out", log_x0_reconstructed)
+                print_tensor_statistics("timesteps", timesteps)
+                print_tensor_statistics("clip_outputs.last_hidden_state", clip_outputs.last_hidden_state)
+
 
                 calc_loss_counter = time.perf_counter()
 
