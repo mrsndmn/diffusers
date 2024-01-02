@@ -599,4 +599,6 @@ if __name__ == '__main__':
 
     print("model params:", count_params(model))
 
+    torch.autograd.set_detect_anomaly(check_nan=True)
+
     train_loop(config, model, clip_tokenizer, clip_text_model, encodec_model, noise_scheduler, timesteps_sampler, optimizer, train_dataloader, lr_scheduler)
