@@ -320,6 +320,9 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         # Retrieve lora scale.
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
 
+        def debug_tensor(name, tens):
+            print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+
         # 1. Input
         if self.is_input_continuous:
             batch, _, height, width = hidden_states.shape
@@ -358,6 +361,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                 timestep, embedded_timestep = self.adaln_single(
                     timestep, added_cond_kwargs, batch_size=batch_size, hidden_dtype=hidden_states.dtype
                 )
+
+        debug_tensor("hidden_states before blocks", hidden_states)
 
         # 2. Blocks
         if self.caption_projection is not None:
@@ -400,6 +405,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     class_labels=class_labels,
                 )
 
+        debug_tensor("hidden_states after blocks", hidden_states)
+
         # 3. Output
         if self.is_input_continuous:
             if not self.use_linear_projection:
@@ -427,10 +434,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             # log(p(x_0))
             if not str(logits.device).startswith("mps"):
                 logits = logits.double()
-            def debug_tensor(name, tens):
-                print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
 
-            debug_tensor("hidden_states", hidden_states)
+            debug_tensor("hidden_states out", hidden_states)
             debug_tensor("logits before logsotmax", logits)
 
             output = F.log_softmax(logits, dim=1).float()
