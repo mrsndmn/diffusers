@@ -700,6 +700,9 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
     ):
         super().__init__()
 
+        # no mask for dense scheduler
+        self.mask_class = -1
+
         self.num_train_timesteps = q_transition_martices.shape[0]
         self.num_embed = q_transition_martices.shape[1]
         assert q_transition_martices.shape[1] == q_transition_martices.shape[2], 'q_transition_martices is square'
@@ -951,6 +954,24 @@ class VQDiffusionDenseUniformMaskScheduler(VQDiffusionDenseScheduler):
         # formula (7) in https://arxiv.org/pdf/2111.14822.pdf
         q_transition_martices = betta_ones_matrix * bt + alpha_eye_matrix * at
         q_transition_cummulative_martices = betta_ones_matrix * btt + alpha_eye_matrix * att
+
+        super().__init__(
+            q_transition_martices=q_transition_martices,
+            q_transition_cummulative_martices=q_transition_cummulative_martices,
+            device=device,
+        )
+
+
+class VQDiffusionDenseTrainedScheduler(VQDiffusionDenseScheduler):
+
+    def __init__(self,
+        q_transition_martices_path: str,
+        q_transition_cummulative_martices_path: str,
+        device='cpu'
+    ):
+
+        q_transition_martices = torch.load(q_transition_martices_path)
+        q_transition_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
 
         super().__init__(
             q_transition_martices=q_transition_martices,

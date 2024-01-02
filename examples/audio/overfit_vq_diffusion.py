@@ -45,7 +45,7 @@ from timestep_sampling import TimestepsSampler
 
 from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
 
-from diffusers.schedulers.scheduling_vq_diffusion import VQDiffusionDenseScheduler, index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseUniformMaskScheduler
+from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseUniformMaskScheduler, VQDiffusionDenseTrainedScheduler
 
 NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
@@ -94,7 +94,10 @@ class TrainingConfig:
 
     timesteps_sampling = TimestepsSampler.SAMPLING_STRATEGY_UNIFORM
 
-    noise_scheduler = "dense_masked_uniform" # dense_masked_uniform | optimal_masked_uniform | dense_trained
+    noise_scheduler = "dense_trained" # dense_masked_uniform | optimized_masked_uniform | dense_trained
+    # used for dense_trained
+    noise_scheduler_q_transition_martices_path = "./Q_transitioning_raw.pth"
+    noise_scheduler_q_transition_cummulative_martices_path = "./Q_transitioning_cumulative_raw.pth"
 
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
@@ -321,8 +324,10 @@ def train_loop(
 
                 calc_loss_counter = time.perf_counter()
 
-                log_zero_column = -70 * torch.ones([ log_x0_reconstructed.shape[0], 1, log_x0_reconstructed.shape[-1] ], device=log_x0_reconstructed.device)
-                log_x0_reconstructed = torch.cat([log_x0_reconstructed, log_zero_column], dim=1)
+                if isinstance(noise_scheduler, VQDiffusionScheduler):
+                    log_zero_column = -70 * torch.ones([ log_x0_reconstructed.shape[0], 1, log_x0_reconstructed.shape[-1] ], device=log_x0_reconstructed.device)
+                    log_x0_reconstructed = torch.cat([log_x0_reconstructed, log_zero_column], dim=1)
+
                 log_x0_reconstructed = torch.clamp(log_x0_reconstructed, -70, 0)
 
                 print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
@@ -334,10 +339,10 @@ def train_loop(
                     "t":         timesteps,
                 }
 
-                if isinstance(noise_scheduler, VQDiffusionDenseUniformMaskScheduler):
-                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_approximate_args)
-                else:
+                if isinstance(noise_scheduler, VQDiffusionScheduler):
                     log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_approximate_args)
+                else:
+                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_approximate_args)
 
                 print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
 
@@ -350,10 +355,10 @@ def train_loop(
                     "t":         timesteps,
                 }
 
-                if isinstance(noise_scheduler, VQDiffusionDenseUniformMaskScheduler):
-                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_true_args)
-                else:
+                if isinstance(noise_scheduler, VQDiffusionScheduler):
                     log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_true_args)
+                else:
+                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_true_args)
 
 
                 print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
@@ -548,15 +553,23 @@ if __name__ == '__main__':
     # device = 'cpu'
 
     if config.noise_scheduler == "dense_masked_uniform":
-        noise_scheduler_class = VQDiffusionDenseUniformMaskScheduler
-    else:
-        noise_scheduler_class = VQDiffusionDenseScheduler
-
-    noise_scheduler = noise_scheduler_class(
-        num_vec_classes=model_kwargs['num_vector_embeds'],
-        num_train_timesteps=NUM_TRAIN_TIMESTEPS,
-        device=device,
-    )
+        noise_scheduler = VQDiffusionDenseUniformMaskScheduler(
+            num_vec_classes=model_kwargs['num_vector_embeds'],
+            num_train_timesteps=NUM_TRAIN_TIMESTEPS,
+            device=device,
+        )
+    elif config.noise_scheduler == "optimized_masked_uniform":
+        noise_scheduler = VQDiffusionScheduler(
+            num_vec_classes=model_kwargs['num_vector_embeds'],
+            num_train_timesteps=NUM_TRAIN_TIMESTEPS,
+            device=device,
+        )
+    elif config.noise_scheduler == "dense_trained":
+        noise_scheduler = VQDiffusionDenseTrainedScheduler(
+            q_transition_martices_path=config.noise_scheduler_q_transition_martices_path,
+            q_transition_cummulative_martices_path=config.noise_scheduler_q_transition_cummulative_martices_path,
+            device=device,
+        )
 
     timesteps_sampler = TimestepsSampler(strategy=config.timesteps_sampling, num_timesteps=NUM_TRAIN_TIMESTEPS)
     timesteps_sampler.to(device)
