@@ -323,6 +323,10 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         def debug_tensor(name, tens):
             print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
 
+        debug_tensor('transformer forward hidden_states', hidden_states)
+        debug_tensor('transformer forward encoder_hidden_states', encoder_hidden_states)
+        debug_tensor('transformer forward timestep', timestep)
+
         # 1. Input
         if self.is_input_continuous:
             batch, _, height, width = hidden_states.shape
