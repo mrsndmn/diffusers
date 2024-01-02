@@ -427,6 +427,12 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             # log(p(x_0))
             if not str(logits.device).startswith("mps"):
                 logits = logits.double()
+            def debug_tensor(name, tens):
+                print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+
+            debug_tensor("hidden_states", hidden_states)
+            debug_tensor("logits before logsotmax", logits)
+
             output = F.log_softmax(logits, dim=1).float()
 
         if self.is_input_patches:
