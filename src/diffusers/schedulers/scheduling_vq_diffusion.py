@@ -774,7 +774,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         assert log_probs.shape == log_one_hot_x_0_probas.shape, f"{log_probs.shape} != {log_one_hot_x_0_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
-        return log_probs
+        return torch.clamp(log_probs, -70, 0)
 
     def q_transposed_forward(
         self,
@@ -808,7 +808,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         assert log_probs.shape == log_one_hot_x_t_probas.shape, f"{log_probs.shape} != {log_one_hot_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_t_probas shape"
 
-        return log_probs
+        return torch.clamp(log_probs, -70, 0)
 
 
     def q_forward_one_timestep(self, log_x_t_probas, timesteps):
@@ -826,7 +826,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
-        return log_probs
+        return torch.clamp(log_probs, -70, 0)
 
     def q_transposed_forward_one_timestep(self, log_x_t_probas, timesteps):
         # timesteps = (timesteps + (self.num_train_timesteps + 1))%(self.num_train_timesteps + 1)
@@ -844,7 +844,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
-        return log_probs
+        return torch.clamp(log_probs, -70, 0)
 
     # returns Long Tensor on discrete noisy input with dims [ bs, num latent pixels ]
     # def q_posterior_orig(self, log_x_start, log_x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
