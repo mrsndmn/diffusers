@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 # from diffusers import
-from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, VQDiffusionDenseScheduler, VQDiffusionDenseUniformMaskScheduler, VQDiffusionScheduler
+from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, VQDiffusionDenseScheduler, VQDiffusionDenseUniformScheduler, VQDiffusionScheduler
 
 from .test_schedulers import SchedulerCommonTest
 
@@ -165,7 +165,7 @@ class VQDiffusionSchedulerTest(SchedulerCommonTest):
         n_vectors = 10
         n_train_timesteps = 100
 
-        dense_scheduler = VQDiffusionDenseUniformMaskScheduler(
+        dense_scheduler = VQDiffusionDenseUniformScheduler(
             num_vec_classes=n_vectors,
             num_train_timesteps=n_train_timesteps,
         )
@@ -196,7 +196,7 @@ class VQDiffusionSchedulerTest(SchedulerCommonTest):
 
         original_scheduler = VQDiffusionScheduler(n_vectors, n_train_timesteps)
 
-        dense_scheduler = VQDiffusionDenseUniformMaskScheduler(
+        dense_scheduler = VQDiffusionDenseUniformScheduler(
             num_vec_classes=n_vectors,
             num_train_timesteps=n_train_timesteps,
         )

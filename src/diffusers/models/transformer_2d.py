@@ -27,6 +27,7 @@ from .lora import LoRACompatibleConv, LoRACompatibleLinear
 from .modeling_utils import ModelMixin
 from .normalization import AdaLayerNormSingle
 
+from torch.nn.init import xavier_uniform_
 
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
@@ -239,6 +240,21 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             self.caption_projection = PixArtAlphaTextProjection(in_features=caption_channels, hidden_size=inner_dim)
 
         self.gradient_checkpointing = False
+
+        # self.init_weights()
+
+        return
+
+    def init_weights(self):
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Embedding)):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+            elif isinstance(module, nn.LayerNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                module.bias.data.zero_()
+
 
     def _set_gradient_checkpointing(self, module, value=False):
         if hasattr(module, "gradient_checkpointing"):

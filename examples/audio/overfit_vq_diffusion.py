@@ -45,7 +45,7 @@ from timestep_sampling import TimestepsSampler
 
 from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
 
-from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseUniformMaskScheduler, VQDiffusionDenseTrainedScheduler
+from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseUniformScheduler, VQDiffusionDenseTrainedScheduler
 
 NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
@@ -65,8 +65,8 @@ class TrainingConfig:
 
     # dataset and iteration
     dataset_path = "./audio_mnist_full_encodec_processed"
-    train_batch_size = 8
-    eval_batch_size = 8  # how many images to sample during evaluation
+    train_batch_size = 20
+    # eval_batch_size = 20  # how many images to sample during evaluation
     num_epochs = 10000
 
     # optimizer
@@ -75,8 +75,8 @@ class TrainingConfig:
     gradient_accumulation_steps = 1
 
     # save strategy
-    save_image_epochs = 10
-    save_model_epochs = 25
+    save_image_epochs = 3
+    save_model_epochs = 3
 
     # accelerator configs
     push_to_hub = False  # whether to upload the saved model to the HF Hub
@@ -94,7 +94,7 @@ class TrainingConfig:
 
     timesteps_sampling = TimestepsSampler.SAMPLING_STRATEGY_UNIFORM
 
-    noise_scheduler = "dense_trained" # dense_masked_uniform | optimized_masked_uniform | dense_trained
+    noise_scheduler = "dense_trained" # dense_uniform | optimized_masked_uniform | dense_trained
     # used for dense_trained
     noise_scheduler_q_transition_martices_path = "./Q_transitioning_normed.pth"
     noise_scheduler_q_transition_cummulative_martices_path = "./Q_transitioning_cumulative_norm.pth"
@@ -223,7 +223,7 @@ def train_loop(
     clip_tokenizer: AutoTokenizer,
     clip_text_model: CLIPTextModel,
     encodec_model: EncodecModel,
-    noise_scheduler: VQDiffusionScheduler|VQDiffusionDenseUniformMaskScheduler,
+    noise_scheduler: VQDiffusionScheduler|VQDiffusionDenseUniformScheduler,
     timesteps_sampler: TimestepsSampler,
     optimizer,
     train_dataloader,
@@ -509,6 +509,8 @@ if __name__ == '__main__':
 
     print("loading dataset", datetime.now())
     audio_mnist_dataset_24khz_processed = datasets.load_from_disk(config.dataset_path)
+    # audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz_processed.select(range(8))
+
     print("loaded and casted dataset", datetime.now())
 
     encodec_model_name = "facebook/encodec_24khz"
@@ -561,8 +563,8 @@ if __name__ == '__main__':
         device = 'cpu'
     # device = 'cpu'
 
-    if config.noise_scheduler == "dense_masked_uniform":
-        noise_scheduler = VQDiffusionDenseUniformMaskScheduler(
+    if config.noise_scheduler == "dense_uniform":
+        noise_scheduler = VQDiffusionDenseUniformScheduler(
             num_vec_classes=model_kwargs['num_vector_embeds'],
             num_train_timesteps=NUM_TRAIN_TIMESTEPS,
             device=device,

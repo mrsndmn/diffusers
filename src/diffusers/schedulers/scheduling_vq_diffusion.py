@@ -209,6 +209,11 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         self.num_train_timesteps = num_train_timesteps
         self.timesteps = torch.from_numpy(np.arange(0, num_train_timesteps)[::-1].copy()).to(device)
 
+    def generate_absolute_noise(self, latents_shape, encodec_model=None, bandwidth=None, device='cpu', max_noise=0.1):
+
+        mask_class = self.mask_class
+        return torch.full(latents_shape, mask_class).to(device)
+
     def set_timesteps(self, num_inference_steps: int, device: Union[str, torch.device] = None):
         """
         Sets the discrete timesteps used for the diffusion chain (to be run before inference).
@@ -707,9 +712,11 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         self.num_train_timesteps = q_transition_martices.shape[0]
         self.num_embed = q_transition_martices.shape[1]
-        assert q_transition_martices.shape[1] == q_transition_martices.shape[2], 'q_transition_martices is square'
+        assert q_transition_martices.shape[1] == q_transition_martices.shape[2], 'q_transition_martices are square'
 
         assert q_transition_martices.shape == q_transition_cummulative_martices.shape, f'q_transitioning matricies shapes are different: {q_transition_martices.shape} != {q_transition_cummulative_martices.shape}'
+        assert q_transition_transposed_martices.shape == q_transition_transposed_cummulative_martices.shape, f'q_transitioning matricies shapes are different: {q_transition_transposed_martices.shape} != {q_transition_transposed_cummulative_martices.shape}'
+        assert q_transition_martices.shape == q_transition_transposed_martices.shape, f'q_transitioning matricies shapes are different: {q_transition_martices.shape} != {q_transition_transposed_martices.shape}'
 
         # [ num_timesteps, num_classes, num_classes ]
         self.register_buffer('q_transition_martices', q_transition_martices.float().to(device))
@@ -718,8 +725,41 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         self.register_buffer('q_transition_transposed_martices', q_transition_transposed_martices.float().to(device))
         self.register_buffer('q_transition_transposed_cummulative_martices', q_transition_transposed_cummulative_martices.float().to(device))
 
+        self.timesteps = torch.from_numpy(np.arange(0, self.num_train_timesteps)[::-1].copy()).to(device)
 
         return
+
+
+    def generate_absolute_noise(self, latents_shape, encodec_model=None, bandwidth=None, device='cpu', max_noise=0.1):
+
+        assert bandwidth == 3.0, '[todo] other bandwidths are not supported'
+
+        batch_size, latent_seq_len = latents_shape # [ bs, latent_seq_len ]
+        encodec_scale_factor = 100 # approximately
+        raw_audio_length = int(latent_seq_len * encodec_scale_factor)
+
+        noise_mean = torch.zeros([ batch_size, 1, raw_audio_length], device=encodec_model.device)
+        noise_std = noise_mean.clone() + max_noise
+        noise = torch.normal(mean=noise_mean, std=noise_std).to(encodec_model.device)
+
+        encoder_outputs = encodec_model.encode(
+            noise,
+            padding_mask=None,
+            bandwidth=bandwidth,
+        )
+
+        audio_codes = encoder_outputs.audio_codes # [ 1, bs, num_quntisers, latent_seq_len ]
+        assert audio_codes.shape[0] == 1, f"{audio_codes.shape[0]} == 1"
+        assert audio_codes.shape[1] == batch_size, f"{audio_codes.shape[1]} == {batch_size}"
+        audio_codes = audio_codes[0] # [bs, num_quntisers, latent_seq_len ]
+        audio_codes = audio_codes.permute(0, 2, 1)   # [ bs, seq_len, num_quantizers ]
+        audio_codes = audio_codes.reshape(audio_codes.shape[0], -1) # [ bs, reshaped_latent_seq_len_with_extra (due to approximate encodec_scale_factor) ]
+        audio_codes = audio_codes[:, :latent_seq_len]
+
+        assert audio_codes.shape == torch.Size(latents_shape), f"{audio_codes.shape} == {torch.Size(latents_shape)}"
+
+        return audio_codes
+
 
     def set_timesteps(self, num_inference_steps: int, device: Union[str, torch.device] = None):
         raise NotImplemented
@@ -936,7 +976,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         return VQDiffusionSchedulerOutput(prev_sample=x_t_min_1, prev_sample_log_probas=log_p_x_t_min_1)
 
 
-class VQDiffusionDenseUniformMaskScheduler(VQDiffusionDenseScheduler):
+class VQDiffusionDenseUniformScheduler(VQDiffusionDenseScheduler):
 
     def __init__(self,
         num_vec_classes: int,
@@ -1005,7 +1045,7 @@ class VQDiffusionDenseTrainedScheduler(VQDiffusionDenseScheduler):
         super().__init__(
             q_transition_martices=q_transition_martices,
             q_transition_cummulative_martices=q_transition_cummulative_martices,
-            q_transition_transposed_martices=q_transition_transposed_martices_path,
-            q_transition_transposed_cummulative_martices=q_transition_transposed_cummulative_martices_path,
+            q_transition_transposed_martices=q_transition_transposed_martices,
+            q_transition_transposed_cummulative_martices=q_transition_transposed_cummulative_martices,
             device=device,
         )

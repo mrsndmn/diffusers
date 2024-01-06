@@ -107,8 +107,16 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
         latents_shape = (batch_size, self.transformer.width)
         if latents is None:
-            mask_class = self.transformer.num_vector_embeds - 1
-            latents = torch.full(latents_shape, mask_class).to(self.device)
+            # mask_class = self.transformer.num_vector_embeds - 1
+            # latents = torch.full(latents_shape, mask_class).to(self.transformer.device)
+
+            BANDWIDTH = 3.0
+            latents = self.scheduler.generate_absolute_noise(
+                latents_shape,
+                encodec_model=self.encodec,
+                bandwidth=BANDWIDTH,
+                device=self.transformer.device,
+            )
         else:
             if latents.shape != latents_shape:
                 raise ValueError(f"Unexpected latents shape, got {latents.shape}, expected {latents_shape}")
@@ -120,7 +128,8 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
             latents = latents.to(self.device)
 
         # set timesteps
-        self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+        if self.scheduler.num_train_timesteps != num_inference_steps:
+            self.scheduler.set_timesteps(num_inference_steps, device=self.device)
 
         timesteps_tensor = self.scheduler.timesteps.to(self.device)
 
