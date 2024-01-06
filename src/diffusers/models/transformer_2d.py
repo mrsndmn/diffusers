@@ -241,7 +241,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 
         self.gradient_checkpointing = False
 
-        # self.init_weights()
+        self.init_weights()
 
         return
 
