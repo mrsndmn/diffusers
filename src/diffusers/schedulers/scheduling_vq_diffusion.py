@@ -696,6 +696,8 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         self,
         q_transition_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
         q_transition_cummulative_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
+        q_transition_transposed_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
+        q_transition_transposed_cummulative_martices: torch.Tensor = None, # [ num_timesteps, num_classes, num_classes ]
         device='cpu',
     ):
         super().__init__()
@@ -712,6 +714,10 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         # [ num_timesteps, num_classes, num_classes ]
         self.register_buffer('q_transition_martices', q_transition_martices.float().to(device))
         self.register_buffer('q_transition_cummulative_martices', q_transition_cummulative_martices.float().to(device))
+
+        self.register_buffer('q_transition_transposed_martices', q_transition_transposed_martices.float().to(device))
+        self.register_buffer('q_transition_transposed_cummulative_martices', q_transition_transposed_cummulative_martices.float().to(device))
+
 
         return
 
@@ -801,7 +807,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         # log_one_hot_x_0_probas [ bs, num_embed, sequence_length ]
         assert log_one_hot_x_t_probas.shape[1] == expected_dim_1, f'log_one_hot_x_t_probas.shape[1] expected to be {expected_dim_1}, but got: {log_one_hot_x_t_probas.shape}'
 
-        cummulative_matrix = self.q_transition_cummulative_martices[timesteps]
+        cummulative_matrix = self.q_transition_transposed_cummulative_martices[timesteps]
         cummulative_matrix_transposed = cummulative_matrix.permute(0, 2, 1)
         # cummulative_matricies =
 
@@ -839,7 +845,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         print("q_transposed_forward_one_timestep")
 
-        transition_matrix = self.q_transition_martices[timesteps]
+        transition_matrix = self.q_transition_transposed_martices[timesteps]
         transition_matrix_transposed = transition_matrix.permute(0, 2, 1)
         x_t_probas = torch.exp(log_x_t_probas)
 
@@ -985,14 +991,21 @@ class VQDiffusionDenseTrainedScheduler(VQDiffusionDenseScheduler):
     def __init__(self,
         q_transition_martices_path: str,
         q_transition_cummulative_martices_path: str,
+        q_transition_transposed_martices_path: str,
+        q_transition_transposed_cummulative_martices_path: str,
         device='cpu'
     ):
 
         q_transition_martices = torch.load(q_transition_martices_path)
         q_transition_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
 
+        q_transition_transposed_martices = torch.load(q_transition_martices_path)
+        q_transition_transposed_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
+
         super().__init__(
             q_transition_martices=q_transition_martices,
             q_transition_cummulative_martices=q_transition_cummulative_martices,
+            q_transition_transposed_martices=q_transition_transposed_martices_path,
+            q_transition_transposed_cummulative_martices=q_transition_transposed_cummulative_martices_path,
             device=device,
         )

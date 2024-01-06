@@ -65,14 +65,14 @@ class TrainingConfig:
 
     # dataset and iteration
     dataset_path = "./audio_mnist_full_encodec_processed"
-    train_batch_size = 32
-    eval_batch_size = 16  # how many images to sample during evaluation
+    train_batch_size = 8
+    eval_batch_size = 8  # how many images to sample during evaluation
     num_epochs = 10000
 
     # optimizer
     learning_rate = 1e-4
     lr_warmup_steps = 5000
-    gradient_accumulation_steps = 3
+    gradient_accumulation_steps = 1
 
     # save strategy
     save_image_epochs = 10
@@ -98,6 +98,9 @@ class TrainingConfig:
     # used for dense_trained
     noise_scheduler_q_transition_martices_path = "./Q_transitioning_normed.pth"
     noise_scheduler_q_transition_cummulative_martices_path = "./Q_transitioning_cumulative_norm.pth"
+
+    noise_scheduler_q_transition_transposed_martices_path = "./Q_transitioning_transposed_normed.pth"
+    noise_scheduler_q_transition_transposed_cummulative_martices_path = "./Q_transitioning_cumulative_transposed_normed.pth"
 
 @torch.no_grad()
 def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
@@ -574,6 +577,8 @@ if __name__ == '__main__':
         noise_scheduler = VQDiffusionDenseTrainedScheduler(
             q_transition_martices_path=config.noise_scheduler_q_transition_martices_path,
             q_transition_cummulative_martices_path=config.noise_scheduler_q_transition_cummulative_martices_path,
+            q_transition_transposed_martices_path=config.noise_scheduler_q_transition_transposed_martices_path,
+            q_transition_transposed_cummulative_martices_path=config.noise_scheduler_q_transition_transposed_cummulative_martices_path,
             device=device,
         )
 
