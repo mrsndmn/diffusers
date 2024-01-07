@@ -817,6 +817,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         print("cummulative_matrix", cummulative_matrix.shape, cummulative_matrix.dtype, "cummulative_matrix is nan", cummulative_matrix.isnan().any(), "cummulative_matrix min", cummulative_matrix.min(), "cummulative_matrix max", cummulative_matrix.max())
         print("one_hot_x_0_probas", one_hot_x_0_probas.shape, one_hot_x_0_probas.dtype, "one_hot_x_0_probas is nan", one_hot_x_0_probas.isnan().any(), "one_hot_x_0_probas min", one_hot_x_0_probas.min(), "one_hot_x_0_probas max", one_hot_x_0_probas.max())
         log_probs = torch.log(torch.bmm(cummulative_matrix, one_hot_x_0_probas) + 1e-20)
+        log_probs = log_probs - torch.logsumexp(log_probs, dim=1, keepdim=True)
 
         if log_probs.isnan().any():
             raise ValueError("nan after log")
@@ -854,6 +855,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         one_hot_x_0_probas = torch.exp(log_one_hot_x_t_probas)
 
         log_probs = torch.log(torch.bmm(cummulative_matrix_transposed, one_hot_x_0_probas) + 1e-20)
+        log_probs = log_probs - torch.logsumexp(log_probs, dim=1, keepdim=True)
 
         assert log_probs.shape == log_one_hot_x_t_probas.shape, f"{log_probs.shape} != {log_one_hot_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_t_probas shape"
 
@@ -875,6 +877,8 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
+        log_probs = log_probs - torch.logsumexp(log_probs, dim=1, keepdim=True)
+
         return torch.clamp(log_probs, -70, 0)
 
     def q_transposed_forward_one_timestep(self, log_x_t_probas, timesteps):
@@ -893,10 +897,10 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         assert log_probs.shape == log_x_t_probas.shape, f"{log_probs.shape} != {log_x_t_probas.shape} shape of log_probs expected to be eauals to log_one_hot_x_0_probas shape"
 
+        log_probs = log_probs - torch.logsumexp(log_probs, dim=1, keepdim=True)
+
         return torch.clamp(log_probs, -70, 0)
 
-    # returns Long Tensor on discrete noisy input with dims [ bs, num latent pixels ]
-    # def q_posterior_orig(self, log_x_start, log_x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
     def q_posterior(self, log_p_x_0, x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
         # notice that log_x_t is onehot
         assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps
@@ -923,6 +927,14 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         # for t=0 masking will be made later, here wi will ignore it
         log_EV_xtmin_given_xt_given_xstart = self.q_forward(q, t-1) + log_qt_one_timestep + q_log_sum_exp
+        # normalise
+        log_EV_xtmin_given_xt_given_xstart = log_EV_xtmin_given_xt_given_xstart - torch.logsumexp(log_EV_xtmin_given_xt_given_xstart, dim=1, keepdim=True)
+
+        if log_EV_xtmin_given_xt_given_xstart.isnan().any():
+            raise ValueError("nan after log")
+
+        debug_tensor("log_EV_xtmin_given_xt_given_xstart", log_EV_xtmin_given_xt_given_xstart)
+
         return torch.clamp(log_EV_xtmin_given_xt_given_xstart, -70, 0)
 
     def step(

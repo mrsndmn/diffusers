@@ -8,7 +8,7 @@ class TimestepsSampler(nn.Module):
     VALID_SAMPLING_STRATEGY = set([SAMPLING_STRATEGY_UNIFORM, SAMPLING_STRATEGY_IMPORTANCE])
 
 
-    def __init__(self, strategy: str, num_timesteps: int, minimum_history_for_importance_sampling=100):
+    def __init__(self, strategy: str, num_timesteps: int, minimum_history_for_importance_sampling=10):
         super().__init__()
 
         if strategy not in self.VALID_SAMPLING_STRATEGY:
