@@ -12,6 +12,7 @@ def debug_tensor(name, tens):
 
 def calc_q_transitioning(norm_dim=1):
     Q_transitioning = torch.load('Q_transitioning_raw.pth')
+    Q_transitioning += torch.eye(NUM_VECTORS_IN_CODEBOOK).unsqueeze(0)
 
     Q_transitioning_normed = torch.zeros([ NUM_TRAIN_TIMESTEPS, NUM_VECTORS_IN_CODEBOOK, NUM_VECTORS_IN_CODEBOOK ])
     Q_transitioning_cumulative_normed = torch.zeros([ NUM_TRAIN_TIMESTEPS, NUM_VECTORS_IN_CODEBOOK, NUM_VECTORS_IN_CODEBOOK ])
@@ -21,7 +22,7 @@ def calc_q_transitioning(norm_dim=1):
         Q_transitioning_current: torch.Tensor = Q_transitioning[i]
         Q_transitioning_current_normed = (Q_transitioning_current + 1e-20) / (Q_transitioning_current.sum(dim=norm_dim, keepdim=True) + 1e-20)
         # could be row of ones for originaly zeroed row
-        Q_transitioning_current_normed = Q_transitioning_current_normed / Q_transitioning_current_normed.sum(dim=norm_dim, keepdim=True)
+        # Q_transitioning_current_normed = Q_transitioning_current_normed / Q_transitioning_current_normed.sum(dim=norm_dim, keepdim=True)
 
         if Q_transitioning_current.isnan().any():
             raise ValueError(f"iter={i} Q_transitioning_current contains nan")
@@ -36,7 +37,7 @@ def calc_q_transitioning(norm_dim=1):
             Q_transitioning_cummulative_current = Q_transitioning_cummulative_current @ Q_transitioning_current_normed
             Q_transitioning_cummulative_current = (Q_transitioning_cummulative_current + 1e-20) / (Q_transitioning_cummulative_current.sum(dim=norm_dim, keepdim=True) + 1e-20)
             # could be row of ones for originaly zeroed row
-            Q_transitioning_cummulative_current = Q_transitioning_cummulative_current / Q_transitioning_cummulative_current.sum(dim=norm_dim, keepdim=True)
+            # Q_transitioning_cummulative_current = Q_transitioning_cummulative_current / Q_transitioning_cummulative_current.sum(dim=norm_dim, keepdim=True)
 
         if Q_transitioning_cummulative_current.isnan().any():
             raise ValueError(f"iter={i} Q_transitioning_cummulative_current contains nan")
@@ -64,8 +65,6 @@ def calc_q_transitioning(norm_dim=1):
     if Q_transitioning_cumulative_normed.isnan().any():
         raise ValueError("Q_transitioning_cumulative_normed contains nans")
 
-
-
     return Q_transitioning_normed, Q_transitioning_cumulative_normed
 
 if __name__ == '__main__':
@@ -79,3 +78,8 @@ if __name__ == '__main__':
 
     torch.save(Q_transitioning_transposed_normed, 'Q_transitioning_transposed_normed.pth')
     torch.save(Q_transitioning_cumulative_transposed_normed, 'Q_transitioning_cumulative_transposed_normed.pth')
+
+    if torch.allclose(Q_transitioning_normed, Q_transitioning_transposed_normed, atol=1e-3):
+        print("transitioning matrix equals to transposed transitioning matrix")
+    if torch.allclose(Q_transitioning_transposed_normed, Q_transitioning_cumulative_transposed_normed, atol=1e-3):
+        print("transitioning matrix equals to transposed transitioning matrix")

@@ -848,7 +848,9 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         # log_one_hot_x_0_probas [ bs, num_embed, sequence_length ]
         assert log_one_hot_x_t_probas.shape[1] == expected_dim_1, f'log_one_hot_x_t_probas.shape[1] expected to be {expected_dim_1}, but got: {log_one_hot_x_t_probas.shape}'
 
+        # each matrix is normed by dim=0
         cummulative_matrix = self.q_transition_transposed_cummulative_martices[timesteps]
+        # each matrix is now normed by dim=1
         cummulative_matrix_transposed = cummulative_matrix.permute(0, 2, 1)
         # cummulative_matricies =
 
@@ -909,7 +911,6 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         def debug_tensor(name, tens):
             print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
-
 
         print("q_posterior")
         debug_tensor("log_onehot_x_t", log_onehot_x_t)

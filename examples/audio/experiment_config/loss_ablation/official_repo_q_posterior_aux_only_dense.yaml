@@ -1,0 +1,6 @@
+experiment_name: "q_posterior_official_repo_aux_only_timesteps_importance_sampling_transitioning_matricies_plus_eye"
+# q_posterior_version: Q_POSTERIOR_VERSION_OFFICIAL_REPO
+auxiliary_loss_weight: 1.0
+kl_loss_weight: 0.0
+decoder_nll_loss_weight: 0.0
+timesteps_sampling: importance
