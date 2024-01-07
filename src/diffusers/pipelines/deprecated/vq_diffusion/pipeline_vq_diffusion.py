@@ -129,9 +129,9 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
         # set timesteps
         if self.scheduler.num_train_timesteps != num_inference_steps:
-            self.scheduler.set_timesteps(num_inference_steps, device=self.device)
+            self.scheduler.set_timesteps(num_inference_steps, device=self.transformer.device)
 
-        timesteps_tensor = self.scheduler.timesteps.to(self.device)
+        timesteps_tensor = self.scheduler.timesteps.to(self.transformer.device)
 
         sample = latents
 

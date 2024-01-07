@@ -20,6 +20,9 @@ def calc_q_transitioning(norm_dim=1):
 
         Q_transitioning_current: torch.Tensor = Q_transitioning[i]
         Q_transitioning_current_normed = (Q_transitioning_current + 1e-20) / (Q_transitioning_current.sum(dim=norm_dim, keepdim=True) + 1e-20)
+        # could be row of ones for originaly zeroed row
+        Q_transitioning_current_normed = Q_transitioning_current_normed / Q_transitioning_current_normed.sum(dim=norm_dim, keepdim=True)
+
         if Q_transitioning_current.isnan().any():
             raise ValueError(f"iter={i} Q_transitioning_current contains nan")
 
@@ -32,6 +35,8 @@ def calc_q_transitioning(norm_dim=1):
             debug_tensor("Q_transitioning_cummulative_current", Q_transitioning_cummulative_current)
             Q_transitioning_cummulative_current = Q_transitioning_cummulative_current @ Q_transitioning_current_normed
             Q_transitioning_cummulative_current = (Q_transitioning_cummulative_current + 1e-20) / (Q_transitioning_cummulative_current.sum(dim=norm_dim, keepdim=True) + 1e-20)
+            # could be row of ones for originaly zeroed row
+            Q_transitioning_cummulative_current = Q_transitioning_cummulative_current / Q_transitioning_cummulative_current.sum(dim=norm_dim, keepdim=True)
 
         if Q_transitioning_cummulative_current.isnan().any():
             raise ValueError(f"iter={i} Q_transitioning_cummulative_current contains nan")
@@ -39,14 +44,27 @@ def calc_q_transitioning(norm_dim=1):
         # Q_transitioning_cummulative_current
         # todo есть проблема! матрица несеммитричная
 
+        Q_transitioning_current_normed_sum = Q_transitioning_current_normed.sum(dim=norm_dim)
+        Q_transitioning_current_normed_dim_1_sum = torch.isclose(Q_transitioning_current_normed_sum, torch.ones_like(Q_transitioning_current_normed_sum))
+        if not Q_transitioning_current_normed_dim_1_sum.all():
+            raise ValueError(f"Bad norm at dim={norm_dim} for Q_transitioning_normed:", "count", Q_transitioning_current_normed_dim_1_sum.sum(), "values:", Q_transitioning_current_normed_sum[Q_transitioning_current_normed_dim_1_sum], "indexes", Q_transitioning_current_normed_dim_1_sum.nonzero())
+
+        Q_transitioning_cummulative_current_sum = Q_transitioning_cummulative_current.sum(dim=norm_dim)
+        Q_transitioning_cummulative_current_dim_1_sum = torch.isclose(Q_transitioning_cummulative_current_sum, torch.ones_like(Q_transitioning_cummulative_current_sum))
+        if not Q_transitioning_cummulative_current_dim_1_sum.all():
+            raise ValueError(f"Bad norm at dim={norm_dim} for Q_transitioning_cumulative_normed:", "values:", Q_transitioning_cummulative_current_sum[Q_transitioning_cummulative_current_dim_1_sum], "indexes", Q_transitioning_cummulative_current_dim_1_sum.nonzero())
+
         Q_transitioning_normed[i] = Q_transitioning_current_normed
         Q_transitioning_cumulative_normed[i] = Q_transitioning_cummulative_current
+
 
     if Q_transitioning_normed.isnan().any():
         raise ValueError("Q_transitioning_normed contains nans")
 
     if Q_transitioning_cumulative_normed.isnan().any():
         raise ValueError("Q_transitioning_cumulative_normed contains nans")
+
+
 
     return Q_transitioning_normed, Q_transitioning_cumulative_normed
 
