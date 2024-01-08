@@ -691,6 +691,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         return q
 
 
+class VQDiffusionSchedulerDummyQPosterior(VQDiffusionScheduler):
+    def q_posterior(self, log_p_x_0, x_t, t):
+        return super().q_forward(log_p_x_0, t-1)
+
 class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
     # Без маскированных токенов
     # Создается из заранее вычисленных

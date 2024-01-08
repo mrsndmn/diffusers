@@ -34,7 +34,7 @@ import torch
 from tqdm.auto import tqdm
 import os
 
-from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseUniformScheduler, VQDiffusionDenseTrainedScheduler, VQDiffusionDenseDummyQPosteriorScheduler
+from diffusers.schedulers.scheduling_vq_diffusion import VQDiffusionDenseTrainedDummyQPosteriorScheduler, VQDiffusionSchedulerDummyQPosterior
 
 from overfit_vq_diffusion import TrainingConfig, NUM_TRAIN_TIMESTEPS, BANDWIDTH, SAMPLE_RATE
 
@@ -46,6 +46,8 @@ import torchaudio
 
 config = TrainingConfig()
 
+dense_dummy_scheduler = True
+
 if torch.cuda.is_available():
     device = 'cuda'
 elif torch.backends.mps.is_available():
@@ -53,17 +55,25 @@ elif torch.backends.mps.is_available():
 else:
     device = 'cpu'
 
-noise_scheduler = VQDiffusionDenseTrainedScheduler(
-    q_transition_martices_path=config.noise_scheduler_q_transition_martices_path,
-    q_transition_cummulative_martices_path=config.noise_scheduler_q_transition_cummulative_martices_path,
-    q_transition_transposed_martices_path=config.noise_scheduler_q_transition_transposed_martices_path,
-    q_transition_transposed_cummulative_martices_path=config.noise_scheduler_q_transition_transposed_cummulative_martices_path,
-    device=device,
-)
-
 variant = "q_posterior_official_repo_aux_only_timesteps_importance_sampling_transitioning_matricies_plus_eye2024-01-07 15:36:11.188800"
 model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True)
 assert model.is_input_continuous == False, 'transformer is discrete'
+
+
+if dense_dummy_scheduler:
+    noise_scheduler = VQDiffusionDenseTrainedDummyQPosteriorScheduler(
+        q_transition_martices_path=config.noise_scheduler_q_transition_martices_path,
+        q_transition_cummulative_martices_path=config.noise_scheduler_q_transition_cummulative_martices_path,
+        q_transition_transposed_martices_path=config.noise_scheduler_q_transition_transposed_martices_path,
+        q_transition_transposed_cummulative_martices_path=config.noise_scheduler_q_transition_transposed_cummulative_martices_path,
+        device=device,
+    )
+else:
+    noise_scheduler = VQDiffusionSchedulerDummyQPosterior(
+        num_vec_classes=model.num_vector_embeds,
+        num_train_timesteps=NUM_TRAIN_TIMESTEPS,
+        device=device,
+    )
 
 
 encodec_model_name = "facebook/encodec_24khz"
@@ -119,16 +129,18 @@ print("done")
 
 # todo eval
 
-# frechet = FrechetAudioDistance(
-#     model_name="vggish",
-#     sample_rate=16000,
-#     use_pca=False,
-#     use_activation=False,
-#     verbose=False,
-# )
+frechet = FrechetAudioDistance(
+    model_name="vggish",
+    sample_rate=16000,
+    use_pca=False,
+    use_activation=False,
+    verbose=False,
+)
 
-# fad_score = frechet.score(
-#     "audio_mnist_full/audios/",
-#     generated_samples_path,
-#     background_embds_path="audio_mnist_full/audios/frechet_embeddings.npy",
-# )
+fad_score = frechet.score(
+    "audio_mnist_full/audios/",
+    generated_samples_path,
+    background_embds_path="audio_mnist_full/audios/frechet_embeddings.npy",
+)
+
+print("fad_score", fad_score)
