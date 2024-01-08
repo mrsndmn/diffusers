@@ -903,7 +903,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         return torch.clamp(log_probs, -70, 0)
 
-    def q_posterior(self, log_p_x_0, x_t, t):            # p_theta(xt_1|xt) = sum(q(xt-1|xt,x0')*p(x0'))
+    def q_posterior(self, log_p_x_0, x_t, t):            # p_theta(x{t-1}|x_t) = sum(q(xt-1|xt,x0')*p(x0'))
         # notice that log_x_t is onehot
         assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps
 
@@ -989,6 +989,26 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         return VQDiffusionSchedulerOutput(prev_sample=x_t_min_1, prev_sample_log_probas=log_p_x_t_min_1)
 
 
+class VQDiffusionDenseDummyQPosteriorScheduler(VQDiffusionDenseScheduler):
+
+    def q_posterior(self, log_p_x_0, x_t, t):            # p_theta(x{t-1}|x_t) = sum(q(xt-1|xt,x0')*p(x0'))
+        # notice that log_x_t is onehot
+        assert t.min().item() >= 0 and t.max().item() < self.num_train_timesteps
+
+        def debug_tensor(name, tens):
+            print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+
+        print("q_posterior dummy")
+
+        noisy_x_t_minus_1_again = self.q_forward(log_p_x_0, t-1)
+
+        if noisy_x_t_minus_1_again.isnan().any():
+            raise ValueError("nan after dummy q forward")
+
+        debug_tensor("noisy_x_t_minus_1_again", noisy_x_t_minus_1_again)
+
+        return torch.clamp(noisy_x_t_minus_1_again, -70, 0)
+
 class VQDiffusionDenseUniformScheduler(VQDiffusionDenseScheduler):
 
     def __init__(self,
@@ -1040,6 +1060,30 @@ class VQDiffusionDenseUniformScheduler(VQDiffusionDenseScheduler):
 
 
 class VQDiffusionDenseTrainedScheduler(VQDiffusionDenseScheduler):
+
+    def __init__(self,
+        q_transition_martices_path: str,
+        q_transition_cummulative_martices_path: str,
+        q_transition_transposed_martices_path: str,
+        q_transition_transposed_cummulative_martices_path: str,
+        device='cpu'
+    ):
+
+        q_transition_martices = torch.load(q_transition_martices_path)
+        q_transition_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
+
+        q_transition_transposed_martices = torch.load(q_transition_martices_path)
+        q_transition_transposed_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
+
+        super().__init__(
+            q_transition_martices=q_transition_martices,
+            q_transition_cummulative_martices=q_transition_cummulative_martices,
+            q_transition_transposed_martices=q_transition_transposed_martices,
+            q_transition_transposed_cummulative_martices=q_transition_transposed_cummulative_martices,
+            device=device,
+        )
+
+class VQDiffusionDenseTrainedDummyQPosteriorScheduler(VQDiffusionDenseDummyQPosteriorScheduler):
 
     def __init__(self,
         q_transition_martices_path: str,
