@@ -46,7 +46,7 @@ import torchaudio
 
 config = TrainingConfig()
 
-dense_dummy_scheduler = True
+dense_dummy_scheduler = False
 
 if torch.cuda.is_available():
     device = 'cuda'
@@ -55,7 +55,11 @@ elif torch.backends.mps.is_available():
 else:
     device = 'cpu'
 
-variant = "q_posterior_official_repo_aux_only_timesteps_importance_sampling_transitioning_matricies_plus_eye2024-01-07 15:36:11.188800"
+if dense_dummy_scheduler:
+    variant = "q_posterior_official_repo_aux_only_timesteps_importance_sampling_transitioning_matricies_plus_eye2024-01-07 15:36:11.188800"
+else:
+    variant = "q_posterior_official_repo_aux_only2024-01-07 14:37:35.639452"
+
 model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True)
 assert model.is_input_continuous == False, 'transformer is discrete'
 

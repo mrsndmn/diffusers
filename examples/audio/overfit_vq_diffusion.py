@@ -27,9 +27,8 @@ import os
 import torchaudio
 
 import datasets
-from datasets import Audio, concatenate_datasets
 from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPTextModel, AutoTokenizer
-from diffusers import VQDiffusionScheduler, Transformer2DModel, VQDiffusionPipeline
+from diffusers import Transformer2DModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
 from diffusers.pipelines.deprecated.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioTextConditionalPipeline
@@ -45,7 +44,7 @@ from timestep_sampling import TimestepsSampler
 
 from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
 
-from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseUniformScheduler, VQDiffusionDenseTrainedScheduler
+from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseTrainedDummyQPosteriorScheduler, VQDiffusionSchedulerDummyQPosterior, VQDiffusionScheduler
 
 NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
@@ -94,7 +93,7 @@ class TrainingConfig:
 
     timesteps_sampling = TimestepsSampler.SAMPLING_STRATEGY_UNIFORM
 
-    noise_scheduler = "dense_trained" # dense_uniform | optimized_masked_uniform | dense_trained
+    noise_scheduler = "dense_trained_dummy_q_posterior" # optimized_masked_unifor | optimized_masked_uniform_dummy_q_posterior | dense_trained_dummy_q_posterior
     # used for dense_trained
     noise_scheduler_q_transition_martices_path = "./Q_transitioning_normed.pth"
     noise_scheduler_q_transition_cummulative_martices_path = "./Q_transitioning_cumulative_norm.pth"
@@ -223,7 +222,7 @@ def train_loop(
     clip_tokenizer: AutoTokenizer,
     clip_text_model: CLIPTextModel,
     encodec_model: EncodecModel,
-    noise_scheduler: VQDiffusionScheduler|VQDiffusionDenseUniformScheduler,
+    noise_scheduler: VQDiffusionScheduler,
     timesteps_sampler: TimestepsSampler,
     optimizer,
     train_dataloader,
@@ -328,88 +327,103 @@ def train_loop(
                 print_tensor_statistics("timesteps", timesteps)
                 print_tensor_statistics("clip_outputs.last_hidden_state", clip_outputs.last_hidden_state)
 
+                log_x0_reconstructed = torch.clamp(log_x0_reconstructed, -70, 0)
 
                 calc_loss_counter = time.perf_counter()
 
-                if isinstance(noise_scheduler, VQDiffusionScheduler):
+                if config.decoder_nll_loss_weight > 0.0 and config.kl_loss_weight > 0.0:
+
                     log_zero_column = -70 * torch.ones([ log_x0_reconstructed.shape[0], 1, log_x0_reconstructed.shape[-1] ], device=log_x0_reconstructed.device)
                     log_x0_reconstructed = torch.cat([log_x0_reconstructed, log_zero_column], dim=1)
 
-                log_x0_reconstructed = torch.clamp(log_x0_reconstructed, -70, 0)
+                    print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
-                print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
+                    # save do not save noise here
+                    q_posterior_approximate_args = {
+                        "log_p_x_0": log_x0_reconstructed,
+                        "x_t":       noisy_audio_codes,
+                        "t":         timesteps,
+                    }
 
-                # save do not save noise here
-                q_posterior_approximate_args = {
-                    "log_p_x_0": log_x0_reconstructed,
-                    "x_t":       noisy_audio_codes,
-                    "t":         timesteps,
-                }
+                    if noise_scheduler.is_masked:
+                        log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_approximate_args)
+                    else:
+                        log_model_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_approximate_args)
 
-                if isinstance(noise_scheduler, VQDiffusionScheduler):
-                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_approximate_args)
+                    print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
+
+                    # log_p_x_0 = log_one_hot_audio_codes[:, :-1, :]
+                    # but save noise here!
+
+                    q_posterior_true_args = {
+                        "log_p_x_0": log_one_hot_audio_codes,
+                        "x_t":       noisy_audio_codes,
+                        "t":         timesteps,
+                    }
+
+                    if noise_scheduler.is_masked:
+                        log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_true_args)
+                    else:
+                        log_true_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_true_args)
+
+
+                    print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
+
+                    kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
+                    print_tensor_statistics("kl_loss       ", kl_loss)
+
+                    kl_loss = kl_loss.mean(dim=-1) # [ bs ]
+                    timesteps_sampler.step(kl_loss, timesteps)
+
+                    # kl_loss = kl_loss / timesteps_weight
+
+                    non_zero_timesteps = (timesteps != 0)
+                    zero_timesteps = ~non_zero_timesteps
+                    kl_loss[zero_timesteps] = 0
+                    print_tensor_statistics("kl_loss zeroed zero t ", kl_loss)
+
+                    # sum due to each loss item has already been weighted with timesteps_weight
+                    kl_loss = kl_loss.mean() * config.kl_loss_weight
+
+
+                    # L_{0}
+                    decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_true_prob_x_t_min_1)
+
+                    decoder_x0_nll = decoder_x0_nll.mean(dim=-1)
+
+                    decoder_x0_nll[non_zero_timesteps] = 0
+                    decoder_x0_nll = decoder_x0_nll * config.decoder_nll_loss_weight
+                    print_tensor_statistics("decoder_nll ", decoder_x0_nll)
+
+                    masked_tokens_count = (noisy_audio_codes == noise_scheduler.mask_class).sum().detach().cpu().item()
+                    print("masked_tokens_count", masked_tokens_count)
+                    masked_tokens_counts.append(masked_tokens_count)
+
+                    result_loss = kl_loss + decoder_x0_nll.mean()
                 else:
-                    log_model_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_approximate_args)
-
-                print_tensor_statistics("log_model_prob_x_t_min_1 ", log_model_prob_x_t_min_1)
-
-                # log_p_x_0 = log_one_hot_audio_codes[:, :-1, :]
-                # but save noise here!
-
-                q_posterior_true_args = {
-                    "log_p_x_0": log_one_hot_audio_codes,
-                    "x_t":       noisy_audio_codes,
-                    "t":         timesteps,
-                }
-
-                if isinstance(noise_scheduler, VQDiffusionScheduler):
-                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior_orig(**q_posterior_true_args)
-                else:
-                    log_true_prob_x_t_min_1 = noise_scheduler.q_posterior(**q_posterior_true_args)
-
-
-                print_tensor_statistics("log_true_prob_x_t_min_1       ", log_true_prob_x_t_min_1)
-
-                kl_loss = multinomial_kl(log_true_prob_x_t_min_1, log_model_prob_x_t_min_1)
-                print_tensor_statistics("kl_loss       ", kl_loss)
-
-                kl_loss = kl_loss.mean(dim=-1) # [ bs ]
-                timesteps_sampler.step(kl_loss, timesteps)
-
-                # kl_loss = kl_loss / timesteps_weight
-
-                non_zero_timesteps = (timesteps != 0)
-                zero_timesteps = ~non_zero_timesteps
-                kl_loss[zero_timesteps] = 0
-                print_tensor_statistics("kl_loss zeroed zero t ", kl_loss)
-
-                # sum due to each loss item has already been weighted with timesteps_weight
-                kl_loss = kl_loss.mean() * config.kl_loss_weight
-
-
-                # L_{0}
-                decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_true_prob_x_t_min_1)
-
-                decoder_x0_nll = decoder_x0_nll.mean(dim=-1)
-
-                decoder_x0_nll[non_zero_timesteps] = 0
-                decoder_x0_nll = decoder_x0_nll * config.decoder_nll_loss_weight
-                print_tensor_statistics("decoder_nll ", decoder_x0_nll)
-
-                masked_tokens_count = (noisy_audio_codes == noise_scheduler.mask_class).sum().detach().cpu().item()
-                print("masked_tokens_count", masked_tokens_count)
-                masked_tokens_counts.append(masked_tokens_count)
+                    result_loss = None
+                    kl_loss = None
+                    decoder_x0_nll = None
 
                 # kl_aux
-                log_one_hot_audio_codes_no_mask = log_one_hot_audio_codes[:, :-1, :]
-                log_x0_reconstructed_no_mask = log_x0_reconstructed[:,:-1,:]
-                assert log_one_hot_audio_codes_no_mask.shape == log_x0_reconstructed_no_mask.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_no_mask.shape} != {log_x0_reconstructed_no_mask.shape}"
-                kl_aux = multinomial_kl(log_one_hot_audio_codes_no_mask, log_x0_reconstructed_no_mask)
+                if noise_scheduler.is_masked:
+                    log_one_hot_audio_codes_for_kl = log_one_hot_audio_codes[:, :-1, :]
+                    log_x0_reconstructed_for_kl = log_x0_reconstructed[:,:-1,:]
+                else:
+                    log_one_hot_audio_codes_for_kl = log_one_hot_audio_codes
+                    log_x0_reconstructed_for_kl = log_x0_reconstructed
+
+                assert log_one_hot_audio_codes_for_kl.shape == log_x0_reconstructed_for_kl.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_for_kl.shape} != {log_x0_reconstructed_for_kl.shape}"
+                kl_aux = multinomial_kl(log_one_hot_audio_codes_for_kl, log_x0_reconstructed_for_kl)
                 kl_aux = kl_aux.mean(dim=-1)
                 print_tensor_statistics("kl_aux ", kl_aux)
                 kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
 
-                result_loss = kl_loss + decoder_x0_nll.mean() + kl_aux
+                if result_loss is None:
+                    result_loss = kl_aux
+                else:
+                    result_loss += kl_aux
+
                 if result_loss.isnan().any():
                     raise ValueError("result_loss contains nan")
 
@@ -435,8 +449,10 @@ def train_loop(
 
             base_logs = {}
             base_logs["loss/loss"]        =  result_loss.detach().item()
-            base_logs["loss/kl_loss"]     =  kl_loss.detach().item()
-            base_logs["loss/decoder_nll"] =  decoder_x0_nll.mean().detach().item()
+            if kl_loss is not None and decoder_x0_nll is not None:
+                base_logs["loss/kl_loss"]     =  kl_loss.detach().item()
+                base_logs["loss/decoder_nll"] =  decoder_x0_nll.mean().detach().item()
+
             base_logs["loss/kl_aux"]      = kl_aux.detach().item()
 
             base_logs["params/lr"]    =  lr_scheduler.get_last_lr()[0]
@@ -563,26 +579,28 @@ if __name__ == '__main__':
         device = 'cpu'
     # device = 'cpu'
 
-    if config.noise_scheduler == "dense_uniform":
-        noise_scheduler = VQDiffusionDenseUniformScheduler(
-            num_vec_classes=model_kwargs['num_vector_embeds'],
-            num_train_timesteps=NUM_TRAIN_TIMESTEPS,
-            device=device,
-        )
-    elif config.noise_scheduler == "optimized_masked_uniform":
+    if config.noise_scheduler == "optimized_masked_uniform":
         noise_scheduler = VQDiffusionScheduler(
             num_vec_classes=model_kwargs['num_vector_embeds'],
             num_train_timesteps=NUM_TRAIN_TIMESTEPS,
             device=device,
         )
-    elif config.noise_scheduler == "dense_trained":
-        noise_scheduler = VQDiffusionDenseTrainedScheduler(
+    elif config.noise_scheduler == "optimized_masked_uniform_dummy_q_posterior":
+        noise_scheduler = VQDiffusionSchedulerDummyQPosterior(
+            num_vec_classes=model_kwargs['num_vector_embeds'],
+            num_train_timesteps=NUM_TRAIN_TIMESTEPS,
+            device=device,
+        )
+    elif config.noise_scheduler == "dense_trained_dummy_q_posterior":
+        noise_scheduler = VQDiffusionDenseTrainedDummyQPosteriorScheduler(
             q_transition_martices_path=config.noise_scheduler_q_transition_martices_path,
             q_transition_cummulative_martices_path=config.noise_scheduler_q_transition_cummulative_martices_path,
             q_transition_transposed_martices_path=config.noise_scheduler_q_transition_transposed_martices_path,
             q_transition_transposed_cummulative_martices_path=config.noise_scheduler_q_transition_transposed_cummulative_martices_path,
             device=device,
         )
+    else:
+        raise ValueError(f"unknown nooise scheduler: {config.noise_scheduler}")
 
     timesteps_sampler = TimestepsSampler(strategy=config.timesteps_sampling, num_timesteps=NUM_TRAIN_TIMESTEPS)
     timesteps_sampler.to(device)

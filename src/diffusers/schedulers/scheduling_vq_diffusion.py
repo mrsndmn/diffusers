@@ -167,6 +167,7 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
         # By convention, the index for the mask class is the last class index
         self.mask_class = self.num_embed - 1
+        self.is_masked = True
 
         self.alpha_cum_start = alpha_cum_start
         self.alpha_cum_end = alpha_cum_end
@@ -693,7 +694,16 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
 
 class VQDiffusionSchedulerDummyQPosterior(VQDiffusionScheduler):
     def q_posterior(self, log_p_x_0, x_t, t):
-        return super().q_forward(log_p_x_0, t-1)
+
+        batch_size = log_p_x_0.shape[0]
+        zeros = torch.zeros(batch_size, 1, 1).type_as(log_p_x_0)
+        log_zero_vector = torch.log(zeros+1.0e-30).expand(-1, -1, x_t.shape[-1])
+        log_p_x_0 = torch.cat((log_p_x_0, log_zero_vector), dim=1)
+
+        log_p_x_0_noised = super().q_forward(log_p_x_0, t-1)
+
+        log_p_x_0_noised = torch.clamp(log_p_x_0_noised, -70, 0)
+        return log_p_x_0_noised
 
 class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
     # Без маскированных токенов
@@ -713,6 +723,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
 
         # no mask for dense scheduler
         self.mask_class = -1
+        self.is_masked = False
 
         self.num_train_timesteps = q_transition_martices.shape[0]
         self.num_embed = q_transition_martices.shape[1]
@@ -1013,56 +1024,6 @@ class VQDiffusionDenseDummyQPosteriorScheduler(VQDiffusionDenseScheduler):
 
         return torch.clamp(noisy_x_t_minus_1_again, -70, 0)
 
-class VQDiffusionDenseUniformScheduler(VQDiffusionDenseScheduler):
-
-    def __init__(self,
-        num_vec_classes: int,
-        num_train_timesteps: int = 100,
-        alpha_cum_start: float = 0.99999,
-        alpha_cum_end: float = 0.000009,
-        gamma_cum_start: float = 0.000009,
-        gamma_cum_end: float = 0.99999,
-        device='cpu'
-    ):
-
-        self.num_embed = num_vec_classes
-
-        # By convention, the index for the mask class is the last class index
-        self.mask_class = self.num_embed - 1
-        self.num_train_timesteps = num_train_timesteps
-
-        self.alpha_cum_start = alpha_cum_start
-        self.alpha_cum_end = alpha_cum_end
-        self.gamma_cum_start = gamma_cum_start
-        self.gamma_cum_end = gamma_cum_end
-
-
-        at, att = alpha_schedules(num_train_timesteps, alpha_cum_start=alpha_cum_start, alpha_cum_end=alpha_cum_end)
-
-        num_non_mask_classes = self.num_embed
-        bt = (1 - at) / num_non_mask_classes
-        btt = (1 - att) / num_non_mask_classes
-
-        at = torch.tensor(at).unsqueeze(1).unsqueeze(2)
-        bt = torch.tensor(bt).unsqueeze(1).unsqueeze(2)
-
-        att = torch.tensor(att).unsqueeze(1).unsqueeze(2)[:num_train_timesteps]
-        btt = torch.tensor(btt).unsqueeze(1).unsqueeze(2)[:num_train_timesteps]
-
-        alpha_eye_matrix = torch.eye(num_vec_classes).unsqueeze(0).repeat(num_train_timesteps, 1, 1)
-        betta_ones_matrix = torch.ones([ num_train_timesteps, num_vec_classes, num_vec_classes ])
-
-        # formula (7) in https://arxiv.org/pdf/2111.14822.pdf
-        q_transition_martices = betta_ones_matrix * bt + alpha_eye_matrix * at
-        q_transition_cummulative_martices = betta_ones_matrix * btt + alpha_eye_matrix * att
-
-        super().__init__(
-            q_transition_martices=q_transition_martices,
-            q_transition_cummulative_martices=q_transition_cummulative_martices,
-            device=device,
-        )
-
-
 class VQDiffusionDenseTrainedScheduler(VQDiffusionDenseScheduler):
 
     def __init__(self,
@@ -1076,8 +1037,8 @@ class VQDiffusionDenseTrainedScheduler(VQDiffusionDenseScheduler):
         q_transition_martices = torch.load(q_transition_martices_path)
         q_transition_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
 
-        q_transition_transposed_martices = torch.load(q_transition_martices_path)
-        q_transition_transposed_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
+        q_transition_transposed_martices = torch.load(q_transition_transposed_martices_path)
+        q_transition_transposed_cummulative_martices = torch.load(q_transition_transposed_cummulative_martices_path)
 
         super().__init__(
             q_transition_martices=q_transition_martices,
@@ -1100,8 +1061,8 @@ class VQDiffusionDenseTrainedDummyQPosteriorScheduler(VQDiffusionDenseDummyQPost
         q_transition_martices = torch.load(q_transition_martices_path)
         q_transition_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
 
-        q_transition_transposed_martices = torch.load(q_transition_martices_path)
-        q_transition_transposed_cummulative_martices = torch.load(q_transition_cummulative_martices_path)
+        q_transition_transposed_martices = torch.load(q_transition_transposed_martices_path)
+        q_transition_transposed_cummulative_martices = torch.load(q_transition_transposed_cummulative_martices_path)
 
         super().__init__(
             q_transition_martices=q_transition_martices,
