@@ -521,7 +521,7 @@ if __name__ == '__main__':
             print("override config param:", k, v)
             config.__setattr__(k, v)
 
-    print("config", config)
+    print("config.noise_scheduler", config.noise_scheduler)
 
     print("loading dataset", datetime.now())
     audio_mnist_dataset_24khz_processed = datasets.load_from_disk(config.dataset_path)
