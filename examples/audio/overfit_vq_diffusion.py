@@ -74,8 +74,8 @@ class TrainingConfig:
     gradient_accumulation_steps = 1
 
     # save strategy
-    save_image_epochs = 3
-    save_model_epochs = 3
+    save_image_epochs = 7
+    save_model_epochs = 7
 
     # accelerator configs
     push_to_hub = False  # whether to upload the saved model to the HF Hub
@@ -327,14 +327,16 @@ def train_loop(
                 print_tensor_statistics("timesteps", timesteps)
                 print_tensor_statistics("clip_outputs.last_hidden_state", clip_outputs.last_hidden_state)
 
+                if noise_scheduler.is_masked:
+                    log_zero_column = -70 * torch.ones([ log_x0_reconstructed.shape[0], 1, log_x0_reconstructed.shape[-1] ], device=log_x0_reconstructed.device)
+                    log_x0_reconstructed = torch.cat([log_x0_reconstructed, log_zero_column], dim=1)
+
                 log_x0_reconstructed = torch.clamp(log_x0_reconstructed, -70, 0)
 
                 calc_loss_counter = time.perf_counter()
 
-                if config.decoder_nll_loss_weight > 0.0 and config.kl_loss_weight > 0.0:
-
-                    log_zero_column = -70 * torch.ones([ log_x0_reconstructed.shape[0], 1, log_x0_reconstructed.shape[-1] ], device=log_x0_reconstructed.device)
-                    log_x0_reconstructed = torch.cat([log_x0_reconstructed, log_zero_column], dim=1)
+                # if config.decoder_nll_loss_weight > 0.0 and config.kl_loss_weight > 0.0:
+                if True:
 
                     print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
@@ -373,6 +375,7 @@ def train_loop(
                     print_tensor_statistics("kl_loss       ", kl_loss)
 
                     kl_loss = kl_loss.mean(dim=-1) # [ bs ]
+                    # возможно, это так importance sampling влияет на результат?
                     timesteps_sampler.step(kl_loss, timesteps)
 
                     # kl_loss = kl_loss / timesteps_weight
@@ -399,7 +402,7 @@ def train_loop(
                     print("masked_tokens_count", masked_tokens_count)
                     masked_tokens_counts.append(masked_tokens_count)
 
-                    result_loss = kl_loss + decoder_x0_nll.mean()
+                    result_loss = None # kl_loss + decoder_x0_nll.mean()
                 else:
                     result_loss = None
                     kl_loss = None
