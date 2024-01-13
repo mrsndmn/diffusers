@@ -49,7 +49,6 @@ from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, mu
 NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
 MAX_TRAIN_SAMPLES = 10
-NUM_TRAIN_TIMESTEPS = 100
 SAMPLE_RATE = 24000
 BANDWIDTH = 3.0
 
@@ -61,6 +60,8 @@ AUDIO_MNIST_SAMPLES_PATH = "audio_mnist_full/audios"
 class TrainingConfig:
 
     sample_size = MAX_AUDIO_CODES_LENGTH  # the generated image resolution
+
+    num_train_timesteps = 100
 
     # dataset and iteration
     dataset_path = "./audio_mnist_full_encodec_processed"
@@ -102,7 +103,7 @@ class TrainingConfig:
     noise_scheduler_q_transition_transposed_cummulative_martices_path = "./Q_transitioning_cumulative_transposed_normed.pth"
 
 @torch.no_grad()
-def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
+def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
 
@@ -110,7 +111,7 @@ def evaluate(config, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
     condition_classes = list(range(10))
     text_condition = [ str(x) for x in condition_classes ]
     pipeline_out = pipeline(
-        num_inference_steps=NUM_TRAIN_TIMESTEPS,
+        num_inference_steps=config.num_train_timesteps,
         bandwidth=BANDWIDTH,
         num_generated_audios = 10,
         text_condition=text_condition,
@@ -517,6 +518,8 @@ if __name__ == '__main__':
     parser.add_argument("--config")
     args = parser.parse_args()
 
+    print("args.config", args.config)
+
     with open(args.config, 'r') as file:
         print("override config params from", args.config)
         training_config_overwrite: dict = yaml.safe_load(file)
@@ -562,7 +565,7 @@ if __name__ == '__main__':
         "attention_head_dim": 128,
         "num_attention_heads": 8,
         "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK+1,
-        "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
+        "num_embeds_ada_norm": config.num_train_timesteps,
         "sample_size": width,
         "height": height,
         "num_layers": 8,
@@ -585,13 +588,13 @@ if __name__ == '__main__':
     if config.noise_scheduler == "optimized_masked_uniform":
         noise_scheduler = VQDiffusionScheduler(
             num_vec_classes=model_kwargs['num_vector_embeds'],
-            num_train_timesteps=NUM_TRAIN_TIMESTEPS,
+            num_train_timesteps=config.num_train_timesteps,
             device=device,
         )
     elif config.noise_scheduler == "optimized_masked_uniform_dummy_q_posterior":
         noise_scheduler = VQDiffusionSchedulerDummyQPosterior(
             num_vec_classes=model_kwargs['num_vector_embeds'],
-            num_train_timesteps=NUM_TRAIN_TIMESTEPS,
+            num_train_timesteps=config.num_train_timesteps,
             device=device,
         )
     elif config.noise_scheduler == "dense_trained_dummy_q_posterior":
@@ -605,7 +608,7 @@ if __name__ == '__main__':
     else:
         raise ValueError(f"unknown nooise scheduler: {config.noise_scheduler}")
 
-    timesteps_sampler = TimestepsSampler(strategy=config.timesteps_sampling, num_timesteps=NUM_TRAIN_TIMESTEPS)
+    timesteps_sampler = TimestepsSampler(strategy=config.timesteps_sampling, num_timesteps=config.num_train_timesteps)
     timesteps_sampler.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)

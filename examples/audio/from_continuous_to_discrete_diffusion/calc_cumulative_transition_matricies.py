@@ -5,19 +5,20 @@ from datasets import load_dataset
 from tqdm.auto import tqdm
 
 NUM_VECTORS_IN_CODEBOOK = 1024
-NUM_TRAIN_TIMESTEPS = 100
 
 def debug_tensor(name, tens):
     print(f"{name} [{tens.shape}] ({tens.dtype}) is nan", tens.isnan().any().item(), "min max", tens.min().item(), tens.max().item())
 
-def calc_q_transitioning(norm_dim=1):
-    Q_transitioning = torch.load('Q_transitioning_raw.pth')
+def calc_q_transitioning(filename: str, norm_dim=1):
+    Q_transitioning = torch.load(filename)
     Q_transitioning += torch.eye(NUM_VECTORS_IN_CODEBOOK).unsqueeze(0)
 
-    Q_transitioning_normed = torch.zeros([ NUM_TRAIN_TIMESTEPS, NUM_VECTORS_IN_CODEBOOK, NUM_VECTORS_IN_CODEBOOK ])
-    Q_transitioning_cumulative_normed = torch.zeros([ NUM_TRAIN_TIMESTEPS, NUM_VECTORS_IN_CODEBOOK, NUM_VECTORS_IN_CODEBOOK ])
+    num_train_timesteps = Q_transitioning.shape[0]
 
-    for i in tqdm(range(NUM_TRAIN_TIMESTEPS), total=NUM_TRAIN_TIMESTEPS):
+    Q_transitioning_normed = torch.zeros([ num_train_timesteps, NUM_VECTORS_IN_CODEBOOK, NUM_VECTORS_IN_CODEBOOK ])
+    Q_transitioning_cumulative_normed = torch.zeros([ num_train_timesteps, NUM_VECTORS_IN_CODEBOOK, NUM_VECTORS_IN_CODEBOOK ])
+
+    for i in tqdm(range(num_train_timesteps), total=num_train_timesteps):
 
         Q_transitioning_current: torch.Tensor = Q_transitioning[i]
         Q_transitioning_current_normed = (Q_transitioning_current + 1e-20) / (Q_transitioning_current.sum(dim=norm_dim, keepdim=True) + 1e-20)
@@ -32,8 +33,8 @@ def calc_q_transitioning(norm_dim=1):
             Q_transitioning_cummulative_current: torch.Tensor = Q_transitioning_current_normed
         else:
             # prev mult current
-            debug_tensor("Q_transitioning_current", Q_transitioning_current)
-            debug_tensor("Q_transitioning_cummulative_current", Q_transitioning_cummulative_current)
+            # debug_tensor("Q_transitioning_current", Q_transitioning_current)
+            # debug_tensor("Q_transitioning_cummulative_current", Q_transitioning_cummulative_current)
             Q_transitioning_cummulative_current = Q_transitioning_cummulative_current @ Q_transitioning_current_normed
             Q_transitioning_cummulative_current = (Q_transitioning_cummulative_current + 1e-20) / (Q_transitioning_cummulative_current.sum(dim=norm_dim, keepdim=True) + 1e-20)
             # could be row of ones for originaly zeroed row
@@ -69,17 +70,16 @@ def calc_q_transitioning(norm_dim=1):
 
 if __name__ == '__main__':
 
-    Q_transitioning_normed, Q_transitioning_cumulative_normed = calc_q_transitioning(norm_dim=1)
+    filename = 'Q_transitioning_raw_300_timesteps.pth'
 
-    torch.save(Q_transitioning_normed, 'Q_transitioning_normed.pth')
-    torch.save(Q_transitioning_cumulative_normed, 'Q_transitioning_cumulative_norm.pth')
+    Q_transitioning_normed, Q_transitioning_cumulative_normed = calc_q_transitioning(filename, norm_dim=1)
 
-    Q_transitioning_transposed_normed, Q_transitioning_cumulative_transposed_normed = calc_q_transitioning(norm_dim=0)
+    num_train_timesteps = Q_transitioning_normed.shape[0]
 
-    torch.save(Q_transitioning_transposed_normed, 'Q_transitioning_transposed_normed.pth')
-    torch.save(Q_transitioning_cumulative_transposed_normed, 'Q_transitioning_cumulative_transposed_normed.pth')
+    Q_transitioning_normed_file_name = f'Q_transitioning_normed_{num_train_timesteps}_timesteps.pth'
+    torch.save(Q_transitioning_normed, Q_transitioning_normed_file_name)
+    print("file saved:", Q_transitioning_normed_file_name)
+    Q_transitioning_cumulative_norm_file_name = f'Q_transitioning_cumulative_norm_{num_train_timesteps}_timesteps.pth'
+    torch.save(Q_transitioning_cumulative_normed, Q_transitioning_cumulative_norm_file_name)
+    print("file saved:", Q_transitioning_cumulative_norm_file_name)
 
-    if torch.allclose(Q_transitioning_normed, Q_transitioning_transposed_normed, atol=1e-3):
-        print("transitioning matrix equals to transposed transitioning matrix")
-    if torch.allclose(Q_transitioning_transposed_normed, Q_transitioning_cumulative_transposed_normed, atol=1e-3):
-        print("transitioning matrix equals to transposed transitioning matrix")

@@ -1,0 +1,7 @@
+experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_20_timesteps"
+auxiliary_loss_weight: 1.0
+kl_loss_weight: 0.0
+decoder_nll_loss_weight: 0.0
+noise_scheduler: optimized_masked_uniform_dummy_q_posterior
+num_train_timesteps: 10
+
