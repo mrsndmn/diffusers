@@ -345,6 +345,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         sample: torch.LongTensor,
         generator: Optional[torch.Generator] = None,
         return_dict: bool = True,
+        with_gumbel_noised = True,
+        no_q_posterior = False,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         """
         Predict the sample from the previous timestep by the reverse transition distribution. See
@@ -374,12 +376,13 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         timestep_t = torch.tensor([timestep], dtype=torch.long, device=model_output.device)
         timestep_t = timestep_t.repeat(batch_size)
 
-        if timestep == 0:
+        if timestep == 0 or no_q_posterior:
             log_p_x_t_min_1 = model_output
         else:
             log_p_x_t_min_1 = self.q_posterior(model_output, sample, timestep_t)
 
-        log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1, generator)
+        if with_gumbel_noised:
+            log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1, generator)
 
         x_t_min_1 = log_p_x_t_min_1.argmax(dim=1)
 
@@ -959,6 +962,7 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         timestep: torch.long,
         sample: torch.LongTensor,
         generator: Optional[torch.Generator] = None,
+        with_gumbel_noised = True,
         return_dict: bool = True,
     ) -> Union[VQDiffusionSchedulerOutput, Tuple]:
         """
@@ -994,7 +998,8 @@ class VQDiffusionDenseScheduler(nn.Module, SchedulerMixin, ConfigMixin):
         else:
             log_p_x_t_min_1 = self.q_posterior(model_output, sample, timestep_t)
 
-        log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1, generator)
+        if with_gumbel_noised:
+            log_p_x_t_min_1 = gumbel_noised(log_p_x_t_min_1, generator)
 
         x_t_min_1 = log_p_x_t_min_1.argmax(dim=1)
 

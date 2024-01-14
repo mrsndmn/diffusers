@@ -54,8 +54,6 @@ BANDWIDTH = 3.0
 
 script_start_time = datetime.now()
 
-AUDIO_MNIST_SAMPLES_PATH = "audio_mnist_full/audios"
-
 @dataclass
 class TrainingConfig:
 

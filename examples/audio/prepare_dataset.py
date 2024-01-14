@@ -24,35 +24,6 @@ MAX_AUDIO_CODES_LENGTH = 256
 SAMPLE_RATE = 24000
 
 
-# def process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, examples):
-
-#     audio_codes_batch = []
-#     audio_scales_batch = []
-#     audio_embeddings_batch = []
-
-#     process_audio_encodec_counter = time.perf_counter()
-#     for audio in examples['audio']:
-#         example = {
-#             "audio": {
-#                 "array": audio['array']
-#             }
-#         }
-#         audio_processed = _process_audio_encodec(encodec_processor, encodec_model, example)
-#         audio_codes_batch.append( audio_processed['audio_codes'] )
-#         audio_scales_batch.append( audio_processed['audio_scales'] )
-#         audio_embeddings_batch.append( audio_processed['audio_embeddings'] )
-
-#     # print(examples["label"])
-
-#     print("process_audio_encodec_counter", time.perf_counter() - process_audio_encodec_counter)
-
-#     return {
-#         "audio_codes": audio_codes_batch,
-#         # "audio_scales": audio_scales_batch,
-#         "audio_embeddings": audio_embeddings_batch,
-#         **clip_processed,
-#     }
-
 @torch.no_grad
 def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, clip_tokenizer, example):
     max_audio_sample_len = SAMPLE_RATE * 2

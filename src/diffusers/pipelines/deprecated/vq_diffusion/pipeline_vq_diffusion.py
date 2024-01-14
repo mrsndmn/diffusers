@@ -88,8 +88,10 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
         text_condition: Optional[List[str]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: int = 1,
+        scheduler_step_with_gumbel_noised = True,
+        scheduler_step_no_q_posterior=False,
         bandwidth=None,
-    ) -> Union[ImagePipelineOutput, Tuple]:
+    ) -> Union[AudioCodesPipelineOutput, Tuple]:
 
         assert bandwidth is not None, "bandwidth must be setup"
 
@@ -164,7 +166,12 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
             model_output = model_output.clamp(-70)
 
             # compute the previous noisy sample x_t -> x_t-1
-            sample = self.scheduler.step(model_output, timestep=t, sample=sample, generator=generator).prev_sample
+            sample = self.scheduler.step(
+                model_output, timestep=t, sample=sample,
+                generator=generator,
+                with_gumbel_noised=scheduler_step_with_gumbel_noised,
+                no_q_posterior=scheduler_step_no_q_posterior,
+            ).prev_sample
             print("sample.shape", sample.shape)
 
             # call the callback, if provided

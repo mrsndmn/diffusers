@@ -38,7 +38,6 @@ pipeline = VQDiffusionAudioTextConditionalPipeline(
     scheduler=noise_scheduler,
 )
 
-
 sample_x_0 = torch.arange(0, MAX_AUDIO_CODES_LENGTH).reshape(1, -1)
 assert sample_x_0.shape == torch.Size([1, MAX_AUDIO_CODES_LENGTH])
 
