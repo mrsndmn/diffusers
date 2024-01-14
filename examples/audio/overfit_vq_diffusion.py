@@ -335,7 +335,7 @@ def train_loop(
                 calc_loss_counter = time.perf_counter()
 
                 # if config.decoder_nll_loss_weight > 0.0 and config.kl_loss_weight > 0.0:
-                if True:
+                if False:
 
                     print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
@@ -375,7 +375,6 @@ def train_loop(
 
                     kl_loss = kl_loss.mean(dim=-1) # [ bs ]
                     # возможно, это так importance sampling влияет на результат?
-                    timesteps_sampler.step(kl_loss, timesteps)
 
                     # kl_loss = kl_loss / timesteps_weight
 
@@ -417,7 +416,9 @@ def train_loop(
 
                 assert log_one_hot_audio_codes_for_kl.shape == log_x0_reconstructed_for_kl.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_for_kl.shape} != {log_x0_reconstructed_for_kl.shape}"
                 kl_aux = multinomial_kl(log_one_hot_audio_codes_for_kl, log_x0_reconstructed_for_kl)
-                kl_aux = kl_aux.mean(dim=-1)
+                kl_aux = kl_aux.mean(dim=-1) # [  bs ]
+                timesteps_sampler.step(kl_aux, timesteps)
+
                 print_tensor_statistics("kl_aux ", kl_aux)
                 kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
 
