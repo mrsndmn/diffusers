@@ -5,6 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from datetime import datetime
+
+from diffusers.pipelines.pipeline_utils import AudioCodesPipelineOutput
 print("torch.cuda.is_available()", torch.cuda.is_available())
 print("start", datetime.now())
 script_start_time = datetime.now()
@@ -62,7 +64,7 @@ if dense_dummy_scheduler:
 else:
     variant = "q_posterior_official_repo_aux_only2024-01-07 14:37:35.639452"
 
-model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True, num_embeds_ada_norm=100)
+model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True, num_embeds_ada_norm=100, output_attentions=True)
 assert model.is_input_continuous == False, 'transformer is discrete'
 
 
@@ -109,7 +111,7 @@ pipeline = VQDiffusionAudioTextConditionalPipeline(
 
 condition_classes = list(range(10))
 text_condition = [ str(x) for x in condition_classes ]
-pipeline_out = pipeline(
+pipeline_out: AudioCodesPipelineOutput = pipeline(
     num_inference_steps=NUM_TRAIN_TIMESTEPS,
     bandwidth=BANDWIDTH,
     num_generated_audios = 10,
@@ -120,6 +122,17 @@ pipeline_out = pipeline(
 audio_codes = pipeline_out.audio_codes
 audio_values = pipeline_out.audio_values
 
+for timestep_i in range(NUM_TRAIN_TIMESTEPS):
+    total_cross_attention_norm = 0
+    total_self_attention_norm = 0
+    for transformer_block_j in range(len(pipeline_out.self_attentions[0])):
+        self_attention = pipeline_out.self_attentions[timestep_i][transformer_block_j]
+        cross_attention = pipeline_out.cross_attentions[timestep_i][transformer_block_j]
+        #
+        total_cross_attention_norm += self_attention.norm(2)
+        total_self_attention_norm  += cross_attention.norm(2)
+    #
+    print(f"{timestep_i}\t self - cross", total_self_attention_norm - total_cross_attention_norm)
 
 
 test_dir = os.path.join(config.output_dir, config.experiment_name, "samples_dummy_q_posterior_no_gumbel_noise")

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import torch
 import torch.nn.functional as F
@@ -21,7 +21,7 @@ from torch import nn
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..models.embeddings import ImagePositionalEmbeddings
 from ..utils import USE_PEFT_BACKEND, BaseOutput, deprecate, is_torch_version
-from .attention import BasicTransformerBlock
+from .attention import BasicTransformerBlock, BasicTransformerBlockOutput
 from .embeddings import PatchEmbed, PixArtAlphaTextProjection
 from .lora import LoRACompatibleConv, LoRACompatibleLinear
 from .modeling_utils import ModelMixin
@@ -41,6 +41,8 @@ class Transformer2DModelOutput(BaseOutput):
     """
 
     sample: torch.FloatTensor
+    self_attentions: List[torch.FloatTensor] # [ transformer_blocks, *attention_dim ]
+    cross_attentions: List[torch.FloatTensor] # [ transformer_blocks, *attention_dim ]
 
 
 class Transformer2DModel(ModelMixin, ConfigMixin):
@@ -100,11 +102,14 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         norm_eps: float = 1e-5,
         attention_type: str = "default",
         caption_channels: int = None,
+        output_attentions: bool = False,
     ):
         super().__init__()
         self.use_linear_projection = use_linear_projection
         self.num_attention_heads = num_attention_heads
         self.attention_head_dim = attention_head_dim
+        self.output_attentions = output_attentions
+
         inner_dim = num_attention_heads * attention_head_dim
 
         conv_cls = nn.Conv2d if USE_PEFT_BACKEND else LoRACompatibleConv
@@ -201,6 +206,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     norm_elementwise_affine=norm_elementwise_affine,
                     norm_eps=norm_eps,
                     attention_type=attention_type,
+                    output_attentions=output_attentions,
                 )
                 for d in range(num_layers)
             ]
@@ -391,6 +397,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, hidden_states.shape[-1])
 
+        all_self_attentions = []
+        all_cross_attentions = []
         for block in self.transformer_blocks:
             if self.training and self.gradient_checkpointing:
 
@@ -416,7 +424,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     **ckpt_kwargs,
                 )
             else:
-                hidden_states = block(
+                block_output = block(
                     hidden_states,
                     attention_mask=attention_mask,
                     encoder_hidden_states=encoder_hidden_states,
@@ -425,6 +433,13 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     cross_attention_kwargs=cross_attention_kwargs,
                     class_labels=class_labels,
                 )
+                if self.output_attentions:
+                    block_output: BasicTransformerBlockOutput
+                    all_self_attentions.append(block_output.cross_attention)
+                    all_cross_attentions.append(block_output.self_attention)
+                    hidden_states = block_output.hidden_states
+                else:
+                    hidden_states = block_output
 
         debug_tensor("hidden_states after blocks", hidden_states)
 
@@ -491,4 +506,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         if not return_dict:
             return (output,)
 
-        return Transformer2DModelOutput(sample=output)
+        return Transformer2DModelOutput(
+            sample=output,
+            self_attentions=all_self_attentions,
+            cross_attentions=all_cross_attentions,
+        )

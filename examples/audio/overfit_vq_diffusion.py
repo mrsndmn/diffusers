@@ -121,6 +121,21 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
     timings_evaluate_pipeline = time.perf_counter() - evaluate_pipeline_counter
 
     # Save the images
+    attentions_norms_by_timesteps = {}
+    for timestep_i in list(range(0, config.num_train_timesteps, 20)) + [config.num_train_timesteps - 1]:
+        total_cross_attention_norm = 0
+        total_self_attention_norm = 0
+        for transformer_block_j in range(len(pipeline_out.self_attentions[0])):
+            self_attention = pipeline_out.self_attentions[timestep_i][transformer_block_j]
+            cross_attention = pipeline_out.cross_attentions[timestep_i][transformer_block_j]
+            #
+            total_cross_attention_norm += self_attention.norm(2)
+            total_self_attention_norm  += cross_attention.norm(2)
+    #
+    attentions_norms_by_timesteps[f'eval_metrics_attention/self_norm_minus_cross_norm_{timestep_i}'] = (total_self_attention_norm - total_cross_attention_norm).item()
+    attentions_norms_by_timesteps[f'eval_metrics_attention/sum_cross_attention_norm_{timestep_i}'] = total_cross_attention_norm.item()
+    attentions_norms_by_timesteps[f'eval_metrics_attention/sum_self_attention_norm_{timestep_i}'] = total_self_attention_norm.item()
+    print(f"{timestep_i}\t self - cross", total_self_attention_norm - total_cross_attention_norm)
 
     evaluate_save_samples_counter = time.perf_counter()
     test_dir = os.path.join(config.output_dir, config.experiment_name, "samples")
@@ -203,6 +218,8 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
         "eval_metrics/classifier_accuracy": eval_classifier_accuracy,
         "eval_metrics/classifier_perplexity": eval_classifier_perplexity,
         "eval_metrics/fad_score": fad_score,
+
+        **attentions_norms_by_timesteps,
 
         "timings/evaluate_pipeline": timings_evaluate_pipeline,
         "timings/evaluate_save_samples": timings_evaluate_save_samples_counter,
@@ -569,6 +586,7 @@ if __name__ == '__main__':
         "height": height,
         "num_layers": 8,
         "activation_fn": "geglu-approximate",
+        "output_attentions": True,
     }
 
     print("model_kwargs", model_kwargs)

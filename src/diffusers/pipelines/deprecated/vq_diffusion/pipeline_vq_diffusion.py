@@ -17,6 +17,8 @@ from typing import Callable, List, Optional, Tuple, Union
 import torch
 from transformers import CLIPTextModel, CLIPTokenizer, EncodecModel, AutoTokenizer
 
+from diffusers.models.transformer_2d import Transformer2DModelOutput
+
 from ....configuration_utils import ConfigMixin, register_to_config
 from ....models import ModelMixin, Transformer2DModel, VQModel
 from ....schedulers.scheduling_vq_diffusion import VQDiffusionScheduler
@@ -147,17 +149,25 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
         assert encoder_hidden_states.shape[0] == sample.shape[0], "batch dim of sample and of text condition does't match"
 
+        self_attentions = []
+        cross_attentions = []
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # expand the sample if we are doing classifier free guidance
             latent_model_input = sample
 
             # predict the un-noised image
             # model_output == `log_p_x_0`
-            model_output = self.transformer(
+            transformer_output: Transformer2DModelOutput = self.transformer(
                 hidden_states=latent_model_input,
                 encoder_hidden_states=encoder_hidden_states,
                 timestep=t,
-            ).sample
+            )
+
+            model_output = transformer_output.sample
+
+            self_attentions.append(transformer_output.self_attentions)
+            cross_attentions.append(transformer_output.cross_attentions)
+
             print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
 
             model_output = self.truncate(model_output, truncation_rate)
@@ -200,7 +210,12 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
             all_audio_values.append(audio_values)
         all_audio_values = torch.cat(all_audio_values, dim=0)
 
-        return AudioCodesPipelineOutput(audio_codes=audio_codes, audio_values=all_audio_values)
+        return AudioCodesPipelineOutput(
+            audio_codes=audio_codes,
+            audio_values=all_audio_values,
+            self_attentions=self_attentions,
+            cross_attentions=cross_attentions,
+        )
 
     def truncate(self, log_p_x_0: torch.FloatTensor, truncation_rate: float) -> torch.FloatTensor:
         """
