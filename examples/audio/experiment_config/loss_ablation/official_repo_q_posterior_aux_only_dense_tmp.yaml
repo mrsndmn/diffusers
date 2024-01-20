@@ -1,9 +1,9 @@
-experiment_name: "q_posterior_official_repo_aux_only_timesteps_importance_sampling_aux"
+experiment_name: "q_posterior_official_repo_aux_only_timesteps_importance_sampling_aux_dbg"
 # q_posterior_version: Q_POSTERIOR_VERSION_OFFICIAL_REPO
 auxiliary_loss_weight: 1.0
 kl_loss_weight: 0.0
 decoder_nll_loss_weight: 0.0
 timesteps_sampling: importance
 noise_scheduler: dense_trained_dummy_q_posterior
-save_image_epochs: 1
-save_model_epochs: 1
+save_image_epochs: 7
+save_model_epochs: 7

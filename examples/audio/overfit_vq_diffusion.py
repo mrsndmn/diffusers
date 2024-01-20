@@ -76,6 +76,8 @@ class TrainingConfig:
     save_image_epochs = 7
     save_model_epochs = 7
 
+    num_evaluation_samples = 100
+
     # accelerator configs
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False
@@ -106,12 +108,12 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
     # The default pipeline output type is `List[PIL.Image]`
 
     evaluate_pipeline_counter = time.perf_counter()
-    condition_classes = list(range(10))
+    condition_classes = list(range(10)) * 10
     text_condition = [ str(x) for x in condition_classes ]
     pipeline_out = pipeline(
         num_inference_steps=config.num_train_timesteps,
         bandwidth=BANDWIDTH,
-        num_generated_audios = 10,
+        num_generated_audios = len(condition_classes),
         text_condition=text_condition,
     )
     audio_codes = pipeline_out.audio_codes
@@ -122,7 +124,7 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
 
     # Save the images
     attentions_norms_by_timesteps = {}
-    for timestep_i in list(range(0, config.num_train_timesteps, 20)) + [config.num_train_timesteps - 1]:
+    for timestep_i in list(range(0, config.num_train_timesteps, 20)) + [ config.num_train_timesteps - 3, config.num_train_timesteps - 2, config.num_train_timesteps - 1]:
         total_cross_attention_norm = 0
         total_self_attention_norm = 0
         for transformer_block_j in range(len(pipeline_out.self_attentions[0])):
@@ -131,10 +133,11 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
             #
             total_cross_attention_norm += self_attention.norm(2)
             total_self_attention_norm  += cross_attention.norm(2)
-    #
-    attentions_norms_by_timesteps[f'eval_metrics_attention/self_norm_minus_cross_norm_{timestep_i}'] = (total_self_attention_norm - total_cross_attention_norm).item()
-    attentions_norms_by_timesteps[f'eval_metrics_attention/sum_cross_attention_norm_{timestep_i}'] = total_cross_attention_norm.item()
-    attentions_norms_by_timesteps[f'eval_metrics_attention/sum_self_attention_norm_{timestep_i}'] = total_self_attention_norm.item()
+        #
+        attentions_norms_by_timesteps[f'eval_metrics_attention/self_norm_minus_cross_norm_{timestep_i}'] = (total_self_attention_norm - total_cross_attention_norm).item()
+        attentions_norms_by_timesteps[f'eval_metrics_attention/sum_cross_attention_norm_{timestep_i}'] = total_cross_attention_norm.item()
+        attentions_norms_by_timesteps[f'eval_metrics_attention/sum_self_attention_norm_{timestep_i}'] = total_self_attention_norm.item()
+
     print(f"{timestep_i}\t self - cross", total_self_attention_norm - total_cross_attention_norm)
 
     evaluate_save_samples_counter = time.perf_counter()
@@ -278,6 +281,7 @@ def train_loop(
         progress_bar.set_description(f"Epoch {epoch}")
 
         masked_tokens_counts = []
+        model.train()
 
         for step, batch in enumerate(train_dataloader):
             logs = {}
@@ -352,7 +356,7 @@ def train_loop(
                 calc_loss_counter = time.perf_counter()
 
                 # if config.decoder_nll_loss_weight > 0.0 and config.kl_loss_weight > 0.0:
-                if False:
+                if True:
 
                     print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
@@ -391,6 +395,7 @@ def train_loop(
                     print_tensor_statistics("kl_loss       ", kl_loss)
 
                     kl_loss = kl_loss.mean(dim=-1) # [ bs ]
+                    timesteps_sampler.step(kl_loss, timesteps)
                     # возможно, это так importance sampling влияет на результат?
 
                     # kl_loss = kl_loss / timesteps_weight
@@ -405,7 +410,7 @@ def train_loop(
 
 
                     # L_{0}
-                    decoder_x0_nll = - log_categorical(log_one_hot_audio_codes, log_true_prob_x_t_min_1)
+                    decoder_x0_nll = -log_categorical(log_one_hot_audio_codes, log_true_prob_x_t_min_1)
 
                     decoder_x0_nll = decoder_x0_nll.mean(dim=-1)
 
@@ -434,7 +439,7 @@ def train_loop(
                 assert log_one_hot_audio_codes_for_kl.shape == log_x0_reconstructed_for_kl.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_for_kl.shape} != {log_x0_reconstructed_for_kl.shape}"
                 kl_aux = multinomial_kl(log_one_hot_audio_codes_for_kl, log_x0_reconstructed_for_kl)
                 kl_aux = kl_aux.mean(dim=-1) # [  bs ]
-                timesteps_sampler.step(kl_aux, timesteps)
+                # timesteps_sampler.step(kl_aux, timesteps)
 
                 print_tensor_statistics("kl_aux ", kl_aux)
                 kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
@@ -498,20 +503,22 @@ def train_loop(
         # After each epoch you optionally sample some demo images with evaluate() and save the model
         if accelerator.is_main_process:
             unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.eval()
 
             if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-                pipeline = VQDiffusionAudioTextConditionalPipeline(
-                    encodec=encodec_model,
-                    clip_tokenizer=clip_tokenizer,
-                    clip_text_model=clip_text_model,
-                    transformer=unwrapped_model,
-                    scheduler=noise_scheduler,
-                )
+                with torch.no_grad():
+                    pipeline = VQDiffusionAudioTextConditionalPipeline(
+                        encodec=encodec_model,
+                        clip_tokenizer=clip_tokenizer,
+                        clip_text_model=clip_text_model,
+                        transformer=unwrapped_model,
+                        scheduler=noise_scheduler,
+                    )
 
-                evaluate_start_counter = time.perf_counter()
-                logs_scalars = evaluate(config, epoch, pipeline)
-                logs_scalars['timings/evaluate_iteration'] = time.perf_counter() - evaluate_start_counter
-                accelerator.log(logs_scalars, step=global_step)
+                    evaluate_start_counter = time.perf_counter()
+                    logs_scalars = evaluate(config, epoch, pipeline)
+                    logs_scalars['timings/evaluate_iteration'] = time.perf_counter() - evaluate_start_counter
+                    accelerator.log(logs_scalars, step=global_step)
 
             if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
                 if config.push_to_hub:

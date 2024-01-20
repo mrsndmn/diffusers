@@ -25,10 +25,10 @@ import torch
 from tqdm.auto import tqdm
 import os
 
-NUM_EPOCHS = 2
+NUM_EPOCHS = 10
 NUM_VECTORS_IN_CODEBOOK = 1024
 MAX_AUDIO_CODES_LENGTH = 256
-NUM_TRAIN_TIMESTEPS = 20
+NUM_TRAIN_TIMESTEPS = 100
 SAMPLE_RATE = 24000
 BANDWIDTH = 3.0
 MAX_AUDIO_SAMPLE_LEN = int(SAMPLE_RATE * 1.5)
@@ -141,6 +141,6 @@ dataset_dict = {
 noisy_audio_codes_dataset = Dataset.from_dict(dataset_dict)
 noisy_audio_codes_dataset = noisy_audio_codes_dataset.shuffle(seed=42)
 noisy_audio_codes_dataset = noisy_audio_codes_dataset.flatten_indices()
-noisy_audio_codes_dataset.save_to_disk(f"./audio_mnist_continuouse_noise_codes_{NUM_TRAIN_TIMESTEPS}_timesteps")
+noisy_audio_codes_dataset.save_to_disk(f"./audio_mnist_continuouse_noise_codes_{NUM_TRAIN_TIMESTEPS}_timesteps_{NUM_EPOCHS}_epochs")
 
 print("Done.")

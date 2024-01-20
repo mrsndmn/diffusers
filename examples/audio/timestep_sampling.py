@@ -33,6 +33,7 @@ class TimestepsSampler(nn.Module):
 
     def sample_importance(self, batch_size: int):
         if not (self.loss_t_count > self.minimum_history_for_importance_sampling).all():
+            print("fallback to uniform sampling")
             return self.sample_uniform(batch_size)
 
         Lt_sqrt = torch.sqrt(self.loss_t_history + 1e-10) + 0.0001
@@ -40,6 +41,7 @@ class TimestepsSampler(nn.Module):
         pt_all = Lt_sqrt / Lt_sqrt.sum()
 
         t = torch.multinomial(pt_all, num_samples=batch_size, replacement=True)
+        print("make timesteps importance sampling")
 
         return t
 
