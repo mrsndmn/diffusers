@@ -344,7 +344,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
 
         def debug_tensor(name, tens):
-            print(f"{name} is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+            print(f"{name} ", tens.shape, "is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
 
         debug_tensor('transformer forward hidden_states', hidden_states)
         debug_tensor('transformer forward encoder_hidden_states', encoder_hidden_states)

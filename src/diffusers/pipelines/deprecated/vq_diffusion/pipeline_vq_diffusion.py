@@ -157,6 +157,9 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
             # predict the un-noised image
             # model_output == `log_p_x_0`
+            print("hidden_states", latent_model_input.shape, latent_model_input.dtype)
+            print("encoder_hidden_states", encoder_hidden_states.shape, encoder_hidden_states.dtype)
+            print("timestep", t.shape, t.dtype)
             transformer_output: Transformer2DModelOutput = self.transformer(
                 hidden_states=latent_model_input,
                 encoder_hidden_states=encoder_hidden_states,

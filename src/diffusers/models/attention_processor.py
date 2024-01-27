@@ -13,6 +13,7 @@
 # limitations under the License.
 from importlib import import_module
 from typing import Callable, Optional, Union
+import math
 
 import torch
 import torch.nn.functional as F
@@ -1194,14 +1195,18 @@ class XFormersAttnProcessor:
         return hidden_states
 
 
-class AttnProcessor2_0:
+class AttnProcessor2_0(nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
     """
 
     def __init__(self):
+        super().__init__()
+
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
+
+        self.softmax = nn.Softmax(dim=-1)
 
     def __call__(
         self,
@@ -1221,6 +1226,11 @@ class AttnProcessor2_0:
         if input_ndim == 4:
             batch_size, channel, height, width = hidden_states.shape
             hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
+
+        if encoder_hidden_states is not None:
+            print("encoder_hidden_states", encoder_hidden_states.shape)
+
+        print("hidden_states", hidden_states.shape)
 
         batch_size, sequence_length, _ = (
             hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
@@ -1256,7 +1266,12 @@ class AttnProcessor2_0:
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        hidden_states = F.scaled_dot_product_attention(
+
+        attention_method = F.scaled_dot_product_attention
+        if False: # todo use not optimal attention computation for LRP
+            attention_method = self.scaled_dot_product_attention
+
+        hidden_states = attention_method(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
 
@@ -1277,6 +1292,31 @@ class AttnProcessor2_0:
         hidden_states = hidden_states / attn.rescale_output_factor
 
         return hidden_states
+
+    def scaled_dot_product_attention(self, query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None) -> torch.Tensor:
+        # Efficient implementation equivalent to the following:
+        device = query.device
+        L, S = query.size(-2), key.size(-2)
+        scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+        attn_bias = torch.zeros(L, S, dtype=query.dtype, device=device)
+        if is_causal:
+            assert attn_mask is None
+            temp_mask = torch.ones(L, S, dtype=torch.bool, device=device).tril(diagonal=0)
+            attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
+            attn_bias.to(query.dtype)
+
+        if attn_mask is not None:
+            if attn_mask.dtype == torch.bool:
+                attn_mask.masked_fill_(attn_mask.logical_not(), float("-inf"))
+            else:
+                attn_bias += attn_mask
+        attn_weight = query @ key.transpose(-2, -1) * scale_factor
+        attn_weight += attn_bias
+        attn_weight = self.softmax(attn_weight)
+        attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
+
+        return attn_weight @ value
+
 
 
 class FusedAttnProcessor2_0:
@@ -1374,7 +1414,6 @@ class FusedAttnProcessor2_0:
         hidden_states = hidden_states / attn.rescale_output_factor
 
         return hidden_states
-
 
 class CustomDiffusionXFormersAttnProcessor(nn.Module):
     r"""
