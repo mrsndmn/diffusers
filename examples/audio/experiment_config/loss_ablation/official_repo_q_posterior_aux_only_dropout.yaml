@@ -1,6 +1,6 @@
-experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_little"
+experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_little_dropout_25"
 auxiliary_loss_weight: 1.0
 kl_loss_weight: 0.0
 decoder_nll_loss_weight: 0.0
 noise_scheduler: optimized_masked_uniform_dummy_q_posterior
-
+transformer_dropout: 0.25

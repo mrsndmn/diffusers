@@ -63,9 +63,10 @@ class TrainingConfig:
 
     # dataset and iteration
     dataset_path = "./audio_mnist_full_encodec_processed"
-    train_batch_size = 20
+    train_batch_size = 100
     # eval_batch_size = 20  # how many images to sample during evaluation
     num_epochs = 10000
+    transformer_dropout = 0.0
 
     # optimizer
     learning_rate = 1e-4
@@ -73,8 +74,8 @@ class TrainingConfig:
     gradient_accumulation_steps = 1
 
     # save strategy
-    save_image_epochs = 7
-    save_model_epochs = 7
+    save_image_epochs = 14
+    save_model_epochs = 14
 
     num_evaluation_samples = 100
 
@@ -585,15 +586,16 @@ if __name__ == '__main__':
     model_kwargs = {
         "attention_bias": True,
         "cross_attention_dim": clip_text_model.config.hidden_size,
-        "attention_head_dim": 128,
-        "num_attention_heads": 8,
+        "attention_head_dim": 96,
+        "num_attention_heads": 6,
         "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK+1,
         "num_embeds_ada_norm": config.num_train_timesteps,
         "sample_size": width,
         "height": height,
-        "num_layers": 8,
+        "num_layers": 2,
         "activation_fn": "geglu-approximate",
         "output_attentions": True,
+        "dropout": config.transformer_dropout,
     }
 
     print("model_kwargs", model_kwargs)
