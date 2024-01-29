@@ -70,14 +70,14 @@ class TrainingConfig:
 
     # optimizer
     learning_rate = 1e-4
-    lr_warmup_steps = 5000
+    lr_warmup_steps = 10000
     gradient_accumulation_steps = 1
 
     # save strategy
-    save_image_epochs = 14
-    save_model_epochs = 14
+    save_image_epochs = 100
+    save_model_epochs = 100
 
-    num_evaluation_samples = 100
+    num_evaluation_samples = 30
 
     # accelerator configs
     push_to_hub = False  # whether to upload the saved model to the HF Hub
@@ -109,7 +109,7 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
     # The default pipeline output type is `List[PIL.Image]`
 
     evaluate_pipeline_counter = time.perf_counter()
-    condition_classes = list(range(10)) * 10
+    condition_classes = list(range(10)) * int(config.num_evaluation_samples + 1 / 10)
     text_condition = [ str(x) for x in condition_classes ]
     pipeline_out = pipeline(
         num_inference_steps=config.num_train_timesteps,
@@ -592,7 +592,7 @@ if __name__ == '__main__':
         "num_embeds_ada_norm": config.num_train_timesteps,
         "sample_size": width,
         "height": height,
-        "num_layers": 2,
+        "num_layers": 4,
         "activation_fn": "geglu-approximate",
         "output_attentions": True,
         "dropout": config.transformer_dropout,

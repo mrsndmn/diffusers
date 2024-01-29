@@ -205,7 +205,7 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
         for audio_code_i in range(audio_codes.shape[0]):
             audio_code = audio_codes[audio_code_i].unsqueeze(0).unsqueeze(1)
 
-            print("audio_codes", audio_code.shape)
+            # print("audio_codes", audio_code.shape)
 
             padding_mask = None
             audio_values = self.encodec.decode(audio_code, [None], padding_mask, return_dict=True).audio_values
