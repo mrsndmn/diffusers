@@ -389,6 +389,8 @@ class BasicTransformerBlock(nn.Module):
                 attention_mask=encoder_attention_mask,
                 **cross_attention_kwargs,
             )
+            # print("cross_attention", cross_attention.shape)
+            # print("hidden_states", hidden_states.shape)
             hidden_states = cross_attention + hidden_states
 
         # 4. Feed-forward

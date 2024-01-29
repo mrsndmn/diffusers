@@ -68,6 +68,9 @@ class TrainingConfig:
     num_epochs = 10000
     transformer_dropout = 0.0
 
+    apply_wrong_class_reconstruction = False
+    wrong_class_reconstruction_min_timestep = 90
+
     # optimizer
     learning_rate = 1e-4
     lr_warmup_steps = 10000
@@ -109,7 +112,7 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
     # The default pipeline output type is `List[PIL.Image]`
 
     evaluate_pipeline_counter = time.perf_counter()
-    condition_classes = list(range(10)) * int(config.num_evaluation_samples + 1 / 10)
+    condition_classes = list(range(10)) * int((config.num_evaluation_samples + 1) / 10)
     text_condition = [ str(x) for x in condition_classes ]
     pipeline_out = pipeline(
         num_inference_steps=config.num_train_timesteps,
@@ -289,27 +292,68 @@ def train_loop(
 
             train_iteration_counter = time.perf_counter()
 
-            audio_codes = batch["audio_codes"] # [ bs, num_channels, sequence_length ]
+            if not config.apply_wrong_class_reconstruction:
+                audio_codes                       = batch["audio_codes"] # [ bs, num_channels, sequence_length ]
+                audio_codes_reconstruction_target = batch["audio_codes"]
+                attention_mask                    = batch['attention_mask']
+                input_ids                         = batch['input_ids']
+
+                # Sample a random timestep for each image
+                bs = audio_codes.shape[0]
+                timesteps = timesteps_sampler.sample(bs)
+
+            else:
+                # для apply_wrong_class_reconstruction
+                # будем разбивать батч сайз на 2 части
+                # для кодов с большим значением timestep > apply_wrong_class_reconstruction_min_timestep
+                # будем делать подмену valid_audio_codes, чтобы
+                # если модель неправильно предсказала на больших timestep'ах
+                # некоторые токены, она научилась их более честно и правильно подменять
+                # для второй половины батча будем использовать timestep'ы из первой половины,
+                # чтобы сохранить уровень шума
+                assert batch["audio_codes"].shape[0] % 2 == 0, 'for apply_wrong_class_reconstruction batch size must be even'
+
+
+                bs = batch["audio_codes"].shape[0] // 2
+                print("bs", bs)
+                audio_codes                       = batch["audio_codes"][:bs]
+                audio_codes_reconstruction_target = batch["audio_codes"][bs:]
+                attention_mask                    = batch['attention_mask'][:bs]
+                input_ids                         = batch['input_ids'][:bs]
+
+
+                timesteps = timesteps_sampler.sample(bs)
+
+                timesteps_to_reconstruct_mask = timesteps > config.wrong_class_reconstruction_min_timestep
+                timesteps_to_reconstruct_mask_sum = timesteps_to_reconstruct_mask.sum().item()
+                logs['metrics/timesteps_to_reconstruct'] = timesteps_to_reconstruct_mask_sum
+                # для тех таймстемпов, для которых уже нельзя делать реконструкцию
+                # восстанавливаем значение аудиокодов
+                if timesteps_to_reconstruct_mask_sum > 0:
+                    audio_codes_reconstruction_target[timesteps_to_reconstruct_mask] = audio_codes[timesteps_to_reconstruct_mask]
+
+                    attention_mask[timesteps_to_reconstruct_mask] = batch['attention_mask'][bs:][timesteps_to_reconstruct_mask]
+                    input_ids[timesteps_to_reconstruct_mask]      = batch['input_ids'][bs:][timesteps_to_reconstruct_mask]
+
 
             # Sample noise to add to the images
-            bs = audio_codes.shape[0]
             channels = audio_codes.shape[1]
             assert channels == 1, f'channels != 1: {audio_codes.shape}'
             seq_len = audio_codes.shape[2]
 
             audio_codes = audio_codes.reshape([bs, -1])
-            print_tensor_statistics("audio_codes           ", audio_codes)
+            audio_codes_reconstruction_target = audio_codes_reconstruction_target.reshape([bs, -1])
+            print_tensor_statistics("audio_codes                        ", audio_codes)
+            print_tensor_statistics("audio_codes_reconstruction_target  ", audio_codes_reconstruction_target)
 
             calc_clip_text_embeddings_counter = time.perf_counter()
             with torch.no_grad():
-                print_tensor_statistics("input_ids", batch['input_ids'])
-                print_tensor_statistics("attention_mask", batch['attention_mask'])
+                print_tensor_statistics("input_ids", input_ids)
+                print_tensor_statistics("attention_mask", attention_mask)
 
-                clip_outputs = clip_text_model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+                clip_outputs = clip_text_model(input_ids=input_ids, attention_mask=attention_mask)
             logs['timings/calc_clip_text_embeddings'] = time.perf_counter() - calc_clip_text_embeddings_counter
 
-            # Sample a random timestep for each image
-            timesteps = timesteps_sampler.sample(bs)
 
             # Add noise to the clean images according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
@@ -323,6 +367,9 @@ def train_loop(
 
             log_one_hot_audio_codes = index_to_log_onehot(audio_codes, noise_scheduler.num_embed)
             print_tensor_statistics("log_one_hot_audio_codes", log_one_hot_audio_codes)
+
+            log_one_hot_audio_codes_reconstruction_target = index_to_log_onehot(audio_codes_reconstruction_target, noise_scheduler.num_embed)
+            print_tensor_statistics("log_one_hot_audio_codes_reconstruction_target", log_one_hot_audio_codes_reconstruction_target)
 
             add_noise_counter = time.perf_counter()
             scheduler_noise_output = noise_scheduler.add_noise(log_one_hot_audio_codes, timesteps)
@@ -357,7 +404,7 @@ def train_loop(
                 calc_loss_counter = time.perf_counter()
 
                 # if config.decoder_nll_loss_weight > 0.0 and config.kl_loss_weight > 0.0:
-                if True:
+                if False:
 
                     print_tensor_statistics("log_x0_reconstructed ", log_x0_reconstructed)
 
@@ -431,10 +478,10 @@ def train_loop(
 
                 # kl_aux
                 if noise_scheduler.is_masked:
-                    log_one_hot_audio_codes_for_kl = log_one_hot_audio_codes[:, :-1, :]
+                    log_one_hot_audio_codes_for_kl = log_one_hot_audio_codes_reconstruction_target[:, :-1, :]
                     log_x0_reconstructed_for_kl = log_x0_reconstructed[:,:-1,:]
                 else:
-                    log_one_hot_audio_codes_for_kl = log_one_hot_audio_codes
+                    log_one_hot_audio_codes_for_kl = log_one_hot_audio_codes_reconstruction_target
                     log_x0_reconstructed_for_kl = log_x0_reconstructed
 
                 assert log_one_hot_audio_codes_for_kl.shape == log_x0_reconstructed_for_kl.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_for_kl.shape} != {log_x0_reconstructed_for_kl.shape}"
@@ -592,7 +639,7 @@ if __name__ == '__main__':
         "num_embeds_ada_norm": config.num_train_timesteps,
         "sample_size": width,
         "height": height,
-        "num_layers": 4,
+        "num_layers": 2,
         "activation_fn": "geglu-approximate",
         "output_attentions": True,
         "dropout": config.transformer_dropout,
