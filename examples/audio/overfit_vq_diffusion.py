@@ -75,6 +75,7 @@ class TrainingConfig:
     learning_rate = 1e-4
     lr_warmup_steps = 10000
     gradient_accumulation_steps = 1
+    reconstruction_proba = 0.5
 
     # save strategy
     save_image_epochs = 100
@@ -325,6 +326,10 @@ def train_loop(
                 timesteps = timesteps_sampler.sample(bs)
 
                 timesteps_to_reconstruct_mask = timesteps > config.wrong_class_reconstruction_min_timestep
+                allow_reconstruct_term = torch.rand_like(timesteps_to_reconstruct_mask) > config.reconstruction_proba
+
+                timesteps_to_reconstruct_mask = timesteps_to_reconstruct_mask & allow_reconstruct_term
+
                 timesteps_to_reconstruct_mask_sum = timesteps_to_reconstruct_mask.sum().item()
                 logs['metrics/timesteps_to_reconstruct'] = timesteps_to_reconstruct_mask_sum
                 # для тех таймстемпов, для которых уже нельзя делать реконструкцию
@@ -487,7 +492,7 @@ def train_loop(
                 assert log_one_hot_audio_codes_for_kl.shape == log_x0_reconstructed_for_kl.shape, f"auxiliary loss shapes mismatch: {log_one_hot_audio_codes_for_kl.shape} != {log_x0_reconstructed_for_kl.shape}"
                 kl_aux = multinomial_kl(log_one_hot_audio_codes_for_kl, log_x0_reconstructed_for_kl)
                 kl_aux = kl_aux.mean(dim=-1) # [  bs ]
-                # timesteps_sampler.step(kl_aux, timesteps)
+                timesteps_sampler.step(kl_aux, timesteps)
 
                 print_tensor_statistics("kl_aux ", kl_aux)
                 kl_aux = kl_aux.mean() * config.auxiliary_loss_weight
