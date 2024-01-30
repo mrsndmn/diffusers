@@ -70,12 +70,12 @@ class TrainingConfig:
 
     apply_wrong_class_reconstruction = False
     wrong_class_reconstruction_min_timestep = 90
+    reconstruction_proba = 0.1
 
     # optimizer
     learning_rate = 1e-4
     lr_warmup_steps = 10000
     gradient_accumulation_steps = 1
-    reconstruction_proba = 0.5
 
     # save strategy
     save_image_epochs = 100
@@ -326,12 +326,13 @@ def train_loop(
                 timesteps = timesteps_sampler.sample(bs)
 
                 timesteps_to_reconstruct_mask = timesteps > config.wrong_class_reconstruction_min_timestep
-                allow_reconstruct_term = torch.rand_like(timesteps_to_reconstruct_mask) > config.reconstruction_proba
+                allow_reconstruct_term = torch.rand(timesteps_to_reconstruct_mask.shape, device=timesteps_to_reconstruct_mask.device) < config.reconstruction_proba
 
                 timesteps_to_reconstruct_mask = timesteps_to_reconstruct_mask & allow_reconstruct_term
 
                 timesteps_to_reconstruct_mask_sum = timesteps_to_reconstruct_mask.sum().item()
                 logs['metrics/timesteps_to_reconstruct'] = timesteps_to_reconstruct_mask_sum
+                print("timesteps_to_reconstruct_mask_sum", timesteps_to_reconstruct_mask_sum)
                 # для тех таймстемпов, для которых уже нельзя делать реконструкцию
                 # восстанавливаем значение аудиокодов
                 if timesteps_to_reconstruct_mask_sum > 0:

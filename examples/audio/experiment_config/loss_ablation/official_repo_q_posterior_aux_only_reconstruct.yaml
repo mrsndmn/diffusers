@@ -5,5 +5,7 @@ decoder_nll_loss_weight: 0.0
 noise_scheduler: optimized_masked_uniform_dummy_q_posterior
 transformer_dropout: 0.0
 apply_wrong_class_reconstruction: True
-wrong_class_reconstruction_min_timestep: 90
-timesteps_sampling: importance
+wrong_class_reconstruction_min_timestep: 95
+reconstruction_proba: 0.25
+train_batch_size: 200
+# timesteps_sampling: importance
