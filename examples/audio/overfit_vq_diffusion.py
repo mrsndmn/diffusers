@@ -318,7 +318,7 @@ def train_loop(
                 bs = batch["audio_codes"].shape[0] // 2
                 print("bs", bs)
                 audio_codes                       = batch["audio_codes"][:bs]
-                audio_codes_reconstruction_target = batch["audio_codes"][bs:]
+                audio_codes_reconstruction_target = batch["audio_codes"][:bs]
                 attention_mask                    = batch['attention_mask'][:bs]
                 input_ids                         = batch['input_ids'][:bs]
 
@@ -333,13 +333,14 @@ def train_loop(
                 timesteps_to_reconstruct_mask_sum = timesteps_to_reconstruct_mask.sum().item()
                 logs['metrics/timesteps_to_reconstruct'] = timesteps_to_reconstruct_mask_sum
                 print("timesteps_to_reconstruct_mask_sum", timesteps_to_reconstruct_mask_sum)
+
                 # для тех таймстемпов, для которых уже нельзя делать реконструкцию
                 # восстанавливаем значение аудиокодов
+                # change reconstruction target for a little amount of samples
                 if timesteps_to_reconstruct_mask_sum > 0:
-                    audio_codes_reconstruction_target[timesteps_to_reconstruct_mask] = audio_codes[timesteps_to_reconstruct_mask]
-
-                    attention_mask[timesteps_to_reconstruct_mask] = batch['attention_mask'][bs:][timesteps_to_reconstruct_mask]
-                    input_ids[timesteps_to_reconstruct_mask]      = batch['input_ids'][bs:][timesteps_to_reconstruct_mask]
+                    audio_codes_reconstruction_target[timesteps_to_reconstruct_mask] = batch["audio_codes"][bs:][timesteps_to_reconstruct_mask]
+                    attention_mask[timesteps_to_reconstruct_mask]                    = batch['attention_mask'][bs:][timesteps_to_reconstruct_mask]
+                    input_ids[timesteps_to_reconstruct_mask]                         = batch['input_ids'][bs:][timesteps_to_reconstruct_mask]
 
 
             # Sample noise to add to the images
