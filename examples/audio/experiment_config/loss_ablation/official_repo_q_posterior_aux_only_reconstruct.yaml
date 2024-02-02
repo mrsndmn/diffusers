@@ -1,11 +1,11 @@
-experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_reconstruct_40"
+experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_reconstruct_30"
 auxiliary_loss_weight: 1.0
 kl_loss_weight: 0.0
 decoder_nll_loss_weight: 0.0
 noise_scheduler: optimized_masked_uniform_dummy_q_posterior
 transformer_dropout: 0.0
 apply_wrong_class_reconstruction: True
-wrong_class_reconstruction_min_timestep: 40
-reconstruction_proba: 0.5
-train_batch_size: 200
+wrong_class_reconstruction_min_timestep: 30
+reconstruction_proba: 0.9
+train_batch_size: 100
 # timesteps_sampling: importance
