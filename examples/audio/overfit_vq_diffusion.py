@@ -187,14 +187,12 @@ def evaluate_with_samples(
     # Save the images
     attentions_norms_by_timesteps = {}
     for timestep_i in list(range(0, config.num_train_timesteps, 20)) + [ config.num_train_timesteps - 3, config.num_train_timesteps - 2, config.num_train_timesteps - 1]:
-        timestep_idx = timestep_i - start_timestep
-        if timestep_i > start_timestep:
+        if timestep_i >= start_timestep:
             continue
-        print("pipeline_out.self_attentions_sum_norm", len(pipeline_out.self_attentions_sum_norm))
-        print("timestep_idx                         ", timestep_idx)
-        print("timestep_i                           ", timestep_i)
-        total_cross_attention_norm = pipeline_out.self_attentions_sum_norm[timestep_idx]
-        total_self_attention_norm = pipeline_out.cross_attentions_sum_norm[timestep_idx]
+        print("timestep_i", timestep_i)
+        print("- timestep_i - 1", - timestep_i - 1)
+        total_cross_attention_norm = pipeline_out.self_attentions_sum_norm[ -1 - timestep_i]
+        total_self_attention_norm = pipeline_out.cross_attentions_sum_norm[ -1 - timestep_i]
         #
         attentions_norms_by_timesteps[f'eval_metrics_attention_from_timestep_{start_timestep}/self_norm_minus_cross_norm_{timestep_i}'] = (total_self_attention_norm - total_cross_attention_norm).item()
         attentions_norms_by_timesteps[f'eval_metrics_attention_from_timestep_{start_timestep}/sum_cross_attention_norm_{timestep_i}'] = total_cross_attention_norm.item()
@@ -233,6 +231,7 @@ def evaluate_with_samples(
     except ValueError as ve:
         # known error
         if "Imaginary component" not in str(ve):
+            print("imaginary component found while fad score calculation")
             raise ve
 
         fad_score = 0
@@ -609,13 +608,15 @@ def train_loop(
 
             logs.update(base_logs)
 
-            logs['metrics/mean_masked_tokens_count'] = torch.tensor(masked_tokens_counts).float().mean().detach().cpu().item()
+            if len(masked_tokens_counts) > 0:
+                logs['metrics/mean_masked_tokens_count'] = torch.tensor(masked_tokens_counts).float().mean().detach().cpu().item()
 
             if global_step % 100 == 0:
                 logs["system/gpu_memory_allocated"] = torch.cuda.memory_allocated()
 
             logs['timings/train_iteration'] = time.perf_counter() - train_iteration_counter
 
+            print("accelerator.log(logs", logs)
             accelerator.log(logs, step=global_step)
             global_step += 1
 
@@ -639,6 +640,7 @@ def train_loop(
                     evaluate_start_counter = time.perf_counter()
                     logs_scalars = evaluate(config, epoch, pipeline, test_dataloader)
                     logs_scalars['timings/evaluate_iteration'] = time.perf_counter() - evaluate_start_counter
+                    print("logs_scalars", logs_scalars)
                     accelerator.log(logs_scalars, step=global_step)
 
             if (epoch + 1) % config.save_model_epochs == 0 or epoch == config.num_epochs - 1:
