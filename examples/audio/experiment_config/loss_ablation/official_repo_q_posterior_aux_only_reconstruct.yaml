@@ -1,11 +1,13 @@
-experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_reconstruct_30"
+experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_reconstruct_30_monitoring"
 auxiliary_loss_weight: 1.0
 kl_loss_weight: 0.0
 decoder_nll_loss_weight: 0.0
 noise_scheduler: optimized_masked_uniform_dummy_q_posterior
-transformer_dropout: 0.0
+transformer_dropout: 0.3
 apply_wrong_class_reconstruction: True
 wrong_class_reconstruction_min_timestep: 30
 reconstruction_proba: 0.9
 train_batch_size: 100
 # timesteps_sampling: importance
+save_image_epochs: 50
+save_model_epochs: 50

@@ -41,8 +41,8 @@ class Transformer2DModelOutput(BaseOutput):
     """
 
     sample: torch.FloatTensor
-    self_attentions: List[torch.FloatTensor] # [ transformer_blocks, *attention_dim ]
-    cross_attentions: List[torch.FloatTensor] # [ transformer_blocks, *attention_dim ]
+    self_attentions_sum_norm: torch.FloatTensor # [ transformer_blocks, *attention_dim ]
+    cross_attentions_sum_norm: torch.FloatTensor # [ transformer_blocks, *attention_dim ]
 
 
 class Transformer2DModel(ModelMixin, ConfigMixin):
@@ -397,8 +397,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, hidden_states.shape[-1])
 
-        all_self_attentions = []
-        all_cross_attentions = []
+        all_self_attentions_sum_norm = torch.tensor([0.0],  device=hidden_states.device)
+        all_cross_attentions_sum_norm = torch.tensor([0.0], device=hidden_states.device)
         for block in self.transformer_blocks:
             if self.training and self.gradient_checkpointing:
 
@@ -435,8 +435,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                 )
                 if self.output_attentions:
                     block_output: BasicTransformerBlockOutput
-                    all_self_attentions.append(block_output.cross_attention)
-                    all_cross_attentions.append(block_output.self_attention)
+                    all_self_attentions_sum_norm  += block_output.cross_attention.norm(2)
+                    all_cross_attentions_sum_norm += block_output.self_attention.norm(2)
                     hidden_states = block_output.hidden_states
                 else:
                     hidden_states = block_output
@@ -508,6 +508,6 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 
         return Transformer2DModelOutput(
             sample=output,
-            self_attentions=all_self_attentions,
-            cross_attentions=all_cross_attentions,
+            self_attentions_sum_norm=all_self_attentions_sum_norm,
+            cross_attentions_sum_norm=all_cross_attentions_sum_norm,
         )

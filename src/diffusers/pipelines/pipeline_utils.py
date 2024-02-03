@@ -131,8 +131,8 @@ class AudioCodesPipelineOutput(BaseOutput):
     # # [ bs, out_channels ]
     audio_codes: List[np.ndarray]
     audio_values: List[np.ndarray]
-    self_attentions: List[List[torch.Tensor]]
-    cross_attentions: List[List[torch.Tensor]]
+    self_attentions_sum_norm: List[List[torch.Tensor]]
+    cross_attentions_sum_norm: List[List[torch.Tensor]]
 
 
 @dataclass

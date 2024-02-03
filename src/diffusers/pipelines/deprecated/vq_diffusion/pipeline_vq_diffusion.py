@@ -93,6 +93,9 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
         scheduler_step_with_gumbel_noised = True,
         scheduler_step_no_q_posterior=False,
         bandwidth=None,
+        start_timestep=None,
+        clip_input_ids=None,
+        clip_attention_mask=None,
     ) -> Union[AudioCodesPipelineOutput, Tuple]:
 
         assert bandwidth is not None, "bandwidth must be setup"
@@ -137,20 +140,29 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
         timesteps_tensor = self.scheduler.timesteps.to(self.transformer.device)
 
+        if start_timestep is not None:
+            timesteps_tensor = timesteps_tensor[-start_timestep:]
+
+        print("timesteps_tensor",  timesteps_tensor)
+
         sample = latents
 
         encoder_hidden_states = None
         if text_condition is not None:
-            clip_inputs = self.clip_tokenizer(text_condition, padding=True, return_tensors="pt")
-            clip_input_ids = clip_inputs['input_ids'].to(self.clip_text_model.device)
+            clip_inputs         = self.clip_tokenizer(text_condition, padding=True, return_tensors="pt")
+            clip_input_ids      = clip_inputs['input_ids'].to(self.clip_text_model.device)
             clip_attention_mask = clip_inputs['attention_mask'].to(self.clip_text_model.device)
-            clip_outputs = self.clip_text_model(input_ids=clip_input_ids, attention_mask=clip_attention_mask)
-            encoder_hidden_states = clip_outputs.last_hidden_state
+        else:
+            assert clip_input_ids      is not None, f'clip_input_ids is required while text_condition is None'
+            assert clip_attention_mask is not None, f'clip_attention_mask is required while text_condition is None'
+
+        clip_outputs = self.clip_text_model(input_ids=clip_input_ids, attention_mask=clip_attention_mask)
+        encoder_hidden_states = clip_outputs.last_hidden_state
 
         assert encoder_hidden_states.shape[0] == sample.shape[0], "batch dim of sample and of text condition does't match"
 
-        self_attentions = []
-        cross_attentions = []
+        cross_attentions_sum_norm_list = []
+        self_attentions_sum_norm_list = []
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # expand the sample if we are doing classifier free guidance
             latent_model_input = sample
@@ -168,8 +180,8 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
             model_output = transformer_output.sample
 
-            self_attentions.append(transformer_output.self_attentions)
-            cross_attentions.append(transformer_output.cross_attentions)
+            cross_attentions_sum_norm_list.append(transformer_output.cross_attentions_sum_norm)
+            self_attentions_sum_norm_list.append(transformer_output.self_attentions_sum_norm)
 
             print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
 
@@ -216,8 +228,8 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
         return AudioCodesPipelineOutput(
             audio_codes=audio_codes,
             audio_values=all_audio_values,
-            self_attentions=self_attentions,
-            cross_attentions=cross_attentions,
+            cross_attentions_sum_norm=cross_attentions_sum_norm_list,
+            self_attentions_sum_norm=self_attentions_sum_norm_list,
         )
 
     def truncate(self, log_p_x_0: torch.FloatTensor, truncation_rate: float) -> torch.FloatTensor:

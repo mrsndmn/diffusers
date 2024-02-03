@@ -108,19 +108,76 @@ class TrainingConfig:
     noise_scheduler_q_transition_transposed_cummulative_martices_path = "./Q_transitioning_cumulative_transposed_normed.pth"
 
 @torch.no_grad()
-def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline):
+def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextConditionalPipeline, test_dataloader):
+
+    result_metrics = {}
+
+    for start_timestep in [ 25, 50, 90 ]:
+        iteration_metrics = evaluate_with_samples(
+            config, epoch, pipeline,
+            start_timestep=start_timestep,
+            test_batch=next(iter(test_dataloader)),
+        )
+        result_metrics.update(iteration_metrics)
+
+    # start from zero
+    iteration_metrics = evaluate_with_samples(config, epoch, pipeline)
+    result_metrics.update(iteration_metrics)
+
+    return result_metrics
+
+
+
+@torch.no_grad()
+def evaluate_with_samples(
+        config: TrainingConfig,
+        epoch,
+        pipeline: VQDiffusionAudioTextConditionalPipeline,
+        start_timestep=None,
+        test_batch=None
+        ):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
 
+    print("going to evaluate with start timestep", start_timestep)
     evaluate_pipeline_counter = time.perf_counter()
-    condition_classes = list(range(10)) * int((config.num_evaluation_samples + 1) / 10)
+
+
+    if start_timestep is None:
+        start_timestep = config.num_train_timesteps
+        start_samples = None
+        condition_classes = list(range(10)) * int((config.num_evaluation_samples + 1) / 10)
+    else:
+        assert test_batch is not None, "you defined `start_timestep` thus `test_samples` is also required"
+
+        condition_classes = list(map(int, test_batch['labels'].detach().cpu().numpy().tolist()))
+
+        target_device = pipeline.scheduler.log_at.device
+        audio_codes_to_evaluate_start = test_batch['audio_codes'].to(target_device)
+        batch_size = audio_codes_to_evaluate_start.shape[0]
+        audio_codes_to_evaluate_start = audio_codes_to_evaluate_start.reshape([batch_size, -1])
+
+        print("test_samples",audio_codes_to_evaluate_start.shape)
+
+        log_one_hot_x_0_probas = index_to_log_onehot(audio_codes_to_evaluate_start, pipeline.scheduler.num_embed)
+
+        timesteps = start_timestep * torch.ones(audio_codes_to_evaluate_start.shape[0], dtype=torch.long, device=audio_codes_to_evaluate_start.device)
+        start_samples = pipeline.scheduler.add_noise(
+            log_one_hot_x_0_probas,
+            timesteps,
+        )['sample']
+
+
     text_condition = [ str(x) for x in condition_classes ]
     pipeline_out = pipeline(
         num_inference_steps=config.num_train_timesteps,
         bandwidth=BANDWIDTH,
-        num_generated_audios = len(condition_classes),
+        num_generated_audios=config.num_evaluation_samples,
         text_condition=text_condition,
+        start_timestep=start_timestep,
+        latents=start_samples,
     )
+
     audio_codes = pipeline_out.audio_codes
     audio_values = pipeline_out.audio_values
     print("audio_codes.shape", audio_codes.shape)
@@ -130,31 +187,31 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
     # Save the images
     attentions_norms_by_timesteps = {}
     for timestep_i in list(range(0, config.num_train_timesteps, 20)) + [ config.num_train_timesteps - 3, config.num_train_timesteps - 2, config.num_train_timesteps - 1]:
-        total_cross_attention_norm = 0
-        total_self_attention_norm = 0
-        for transformer_block_j in range(len(pipeline_out.self_attentions[0])):
-            self_attention = pipeline_out.self_attentions[timestep_i][transformer_block_j]
-            cross_attention = pipeline_out.cross_attentions[timestep_i][transformer_block_j]
-            #
-            total_cross_attention_norm += self_attention.norm(2)
-            total_self_attention_norm  += cross_attention.norm(2)
+        timestep_idx = timestep_i - start_timestep
+        if timestep_i > start_timestep:
+            continue
+        print("pipeline_out.self_attentions_sum_norm", len(pipeline_out.self_attentions_sum_norm))
+        print("timestep_idx                         ", timestep_idx)
+        print("timestep_i                           ", timestep_i)
+        total_cross_attention_norm = pipeline_out.self_attentions_sum_norm[timestep_idx]
+        total_self_attention_norm = pipeline_out.cross_attentions_sum_norm[timestep_idx]
         #
-        attentions_norms_by_timesteps[f'eval_metrics_attention/self_norm_minus_cross_norm_{timestep_i}'] = (total_self_attention_norm - total_cross_attention_norm).item()
-        attentions_norms_by_timesteps[f'eval_metrics_attention/sum_cross_attention_norm_{timestep_i}'] = total_cross_attention_norm.item()
-        attentions_norms_by_timesteps[f'eval_metrics_attention/sum_self_attention_norm_{timestep_i}'] = total_self_attention_norm.item()
+        attentions_norms_by_timesteps[f'eval_metrics_attention_from_timestep_{start_timestep}/self_norm_minus_cross_norm_{timestep_i}'] = (total_self_attention_norm - total_cross_attention_norm).item()
+        attentions_norms_by_timesteps[f'eval_metrics_attention_from_timestep_{start_timestep}/sum_cross_attention_norm_{timestep_i}'] = total_cross_attention_norm.item()
+        attentions_norms_by_timesteps[f'eval_metrics_attention_from_timestep_{start_timestep}/sum_self_attention_norm_{timestep_i}'] = total_self_attention_norm.item()
 
     print(f"{timestep_i}\t self - cross", total_self_attention_norm - total_cross_attention_norm)
 
     evaluate_save_samples_counter = time.perf_counter()
     test_dir = os.path.join(config.output_dir, config.experiment_name, "samples")
-    generated_samples_path = f"{test_dir}/{script_start_time}/{epoch}"
+    generated_samples_path = f"{test_dir}/{script_start_time}/{epoch}/start_timestep_{start_timestep}"
     generated_samples_path = Path(generated_samples_path)
     generated_samples_path.mkdir(parents=True, exist_ok=True)
 
     for i in range(audio_values.shape[0]):
         current_text_condition = text_condition[i]
         audio_wave = audio_values[i]
-        torchaudio.save(f"{generated_samples_path}/{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
+        torchaudio.save(f"{generated_samples_path}/idx_{i}_num_{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
     timings_evaluate_save_samples_counter = time.perf_counter() - evaluate_save_samples_counter
 
     evaluate_fad_counter = time.perf_counter()
@@ -166,13 +223,24 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
         verbose=False,
     )
 
-    fad_score = frechet.score(
-        "audio_mnist_full/audios/",
-        generated_samples_path,
-        background_embds_path="audio_mnist_full/audios/frechet_embeddings.npy",
-    )
+    target_dir = "audio_mnist_full/audios/"
+    try:
+        fad_score = frechet.score(
+            target_dir,
+            generated_samples_path,
+            background_embds_path="audio_mnist_full/audios/frechet_embeddings.npy",
+        )
+    except ValueError as ve:
+        # known error
+        if "Imaginary component" not in str(ve):
+            raise ve
+
+        fad_score = 0
+
     timings_evaluate_fad_counter = time.perf_counter() - evaluate_fad_counter
     print("fad_score", fad_score)
+    if fad_score < 0:
+        raise ValueError(f"Fad score cant be negative: generated_samples_path={generated_samples_path}, target_dir={target_dir}")
 
     evaluate_classifier_counter = time.perf_counter()
     audio_mnist_state_dict = torch.load("audio_mnist_classifier.pth", map_location='cpu')
@@ -189,13 +257,10 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
         current_text_condition = text_condition[i]
         current_waveform = audio_values[i]
         resmpled_current_waveform = resampler(current_waveform)
-
         # torchaudio.save(f"{test_dir}/{script_start_timestep}/{epoch}/{current_text_condition}_for_classifier.wav", resmpled_current_waveform.to('cpu'), sample_rate=new_sample_rate)
-
         resmpled_current_waveform_np = resmpled_current_waveform[0].cpu().numpy()
         spectrogram_t = torch.tensor(get_spectrogram(resmpled_current_waveform_np, sample_rate=new_sample_rate), device=audio_values.device)
         audio_values_spectrograms.append(spectrogram_t.float())
-
 
     audio_values_spectrograms = torch.cat(audio_values_spectrograms, dim=0)
     audio_values_spectrograms = audio_values_spectrograms.unsqueeze(1)
@@ -219,20 +284,20 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
     print(f"evaluate for epoch {epoch} done")
 
     return {
-        "eval_codes/min":    audio_codes.min(),
-        "eval_codes/max":    audio_codes.max(),
-        "eval_codes/median": audio_codes.median(),
-        "eval_codes/mean":   audio_codes.float().mean(),
-        "eval_metrics/classifier_accuracy": eval_classifier_accuracy,
-        "eval_metrics/classifier_perplexity": eval_classifier_perplexity,
-        "eval_metrics/fad_score": fad_score,
+        f"eval_codes_start_timestep_{start_timestep}/min":    audio_codes.min(),
+        f"eval_codes_start_timestep_{start_timestep}/max":    audio_codes.max(),
+        f"eval_codes_start_timestep_{start_timestep}/median": audio_codes.median(),
+        f"eval_codes_start_timestep_{start_timestep}/mean":   audio_codes.float().mean(),
+        f"eval_metrics_start_timestep_{start_timestep}/classifier_accuracy": eval_classifier_accuracy,
+        f"eval_metrics_start_timestep_{start_timestep}/classifier_perplexity": eval_classifier_perplexity,
+        f"eval_metrics_start_timestep_{start_timestep}/fad_score": fad_score,
 
         **attentions_norms_by_timesteps,
 
-        "timings/evaluate_pipeline": timings_evaluate_pipeline,
-        "timings/evaluate_save_samples": timings_evaluate_save_samples_counter,
-        "timings/evaluate_fad": timings_evaluate_fad_counter,
-        "timings/evaluate_classifier": timings_evaluate_classifier_counter,
+        f"timings_start_timestep_{start_timestep}/evaluate_pipeline": timings_evaluate_pipeline,
+        f"timings_start_timestep_{start_timestep}/evaluate_save_samples": timings_evaluate_save_samples_counter,
+        f"timings_start_timestep_{start_timestep}/evaluate_fad": timings_evaluate_fad_counter,
+        f"timings_start_timestep_{start_timestep}/evaluate_classifier": timings_evaluate_classifier_counter,
     }
     # image_grid.save()
 
@@ -250,6 +315,7 @@ def train_loop(
     timesteps_sampler: TimestepsSampler,
     optimizer,
     train_dataloader,
+    test_dataloader,
     lr_scheduler,
     ):
     # Initialize accelerator and tensorboard logging
@@ -571,7 +637,7 @@ def train_loop(
                     )
 
                     evaluate_start_counter = time.perf_counter()
-                    logs_scalars = evaluate(config, epoch, pipeline)
+                    logs_scalars = evaluate(config, epoch, pipeline, test_dataloader)
                     logs_scalars['timings/evaluate_iteration'] = time.perf_counter() - evaluate_start_counter
                     accelerator.log(logs_scalars, step=global_step)
 
@@ -625,15 +691,30 @@ if __name__ == '__main__':
 
     collator = DefaultDataCollator()
 
+    audio_mnist_dataset_24khz_processed_split = audio_mnist_dataset_24khz_processed.train_test_split(test_size=config.num_evaluation_samples, seed=1)
+    audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed_split['test']
+    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz_processed_split['train']
+
     print("audio_mnist_dataset_24khz_processed", len(audio_mnist_dataset_24khz_processed))
     train_dataloader = torch.utils.data.DataLoader(
-        audio_mnist_dataset_24khz_processed,
+        audio_mnist_dataset_24khz_processed, #.select(range(100)),
         collate_fn=collator,
         batch_size=config.train_batch_size,
         shuffle=True,
         # pin_memory=True,
         # num_workers=2,
     )
+
+    print("audio_mnist_dataset_24khz_processed_test", audio_mnist_dataset_24khz_processed_test[0])
+    test_dataloader = torch.utils.data.DataLoader(
+        audio_mnist_dataset_24khz_processed_test,
+        collate_fn=collator,
+        batch_size=config.num_evaluation_samples,
+        shuffle=False,
+        # pin_memory=True,
+        # num_workers=2,
+    )
+
 
     height = 1
     width = MAX_AUDIO_CODES_LENGTH
@@ -711,4 +792,4 @@ if __name__ == '__main__':
     print("model params:", count_params(model))
 
     with torch.autograd.set_detect_anomaly(True, check_nan=True):
-        train_loop(config, model, clip_tokenizer, clip_text_model, encodec_model, noise_scheduler, timesteps_sampler, optimizer, train_dataloader, lr_scheduler)
+        train_loop(config, model, clip_tokenizer, clip_text_model, encodec_model, noise_scheduler, timesteps_sampler, optimizer, train_dataloader, test_dataloader, lr_scheduler)
