@@ -2,6 +2,7 @@ import torch
 import time
 import numpy as np
 import sys
+import os
 
 import torch
 import torch.nn.functional as F
@@ -49,9 +50,9 @@ def _process_audio_encodec(encodec_processor, encodec_model: EncodecModel, clip_
     audio_codes = audio_codes[:, :MAX_AUDIO_CODES_LENGTH]
     clip_processed = clip_tokenizer(str(example["label"]), padding=False, return_tensors="pt")
     return {
-        "audio_codes": audio_codes,
-        "attention_mask": clip_processed["attention_mask"][0],
-        "input_ids": clip_processed["input_ids"][0],
+        "audio_codes":      audio_codes,
+        "attention_mask":   clip_processed["attention_mask"][0],
+        "input_ids":        clip_processed["input_ids"][0],
     }
 
 
@@ -72,12 +73,17 @@ def process_audio(examples):
     return _process_audio_encodec(encodec_processor, encodec_model, clip_tokenizer, examples)
 
 
+# WARN label в этом датасете сейчас - идентификатор спикера!
 audio_mnist_dataset: datasets.Dataset = load_dataset("audiofolder", data_dir="AudioMNIST/data", split='train')
 
+# сейчас в label хранится идентификатор спикера - делаем по спикерам фильтрацию
 audio_mnist_dataset = audio_mnist_dataset.filter(lambda x: x['label'] < 10)
 # audio_mnist_dataset = audio_mnist_dataset.select(range(1024))
 
 audio_mnist_dataset = audio_mnist_dataset.cast_column("audio", Audio(sampling_rate=SAMPLE_RATE))
+
+# мы хотим, чтобы лейбл был меткой цифры, которую произносят - делаем преобразование
+audio_mnist_dataset = audio_mnist_dataset.map(lambda x: { 'label': int(os.path.basename(x['audio']['path']).split('_', maxsplit=1)[0]) })
 
 print("creating processed dataset", datetime.now())
 audio_mnist_dataset = audio_mnist_dataset.map(process_audio)

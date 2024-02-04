@@ -278,6 +278,7 @@ def count_params(model):
 
 if __name__ == '__main__':
 
+    # WARN label в этом датасете сейчас - идентификатор спикера!
     audio_mnist_dataset = datasets.load_from_disk("./audio_mnist_full")
 
     audio_mnist_dataset_24khz = audio_mnist_dataset.cast_column("audio", Audio(sampling_rate=24000))

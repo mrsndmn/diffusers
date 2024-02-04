@@ -35,6 +35,7 @@ def test_encodec_shapes():
     encodec_model = EncodecModel.from_pretrained(encodec_model_name)
     encodec_processor = AutoProcessor.from_pretrained(encodec_model_name)
 
+    # WARN label в этом датасете сейчас - идентификатор спикера!
     audio_mnist_dataset = datasets.load_from_disk("./audio_mnist_full")
     print("audio_mnist_dataset", audio_mnist_dataset[0])
 

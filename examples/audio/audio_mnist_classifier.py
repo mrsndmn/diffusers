@@ -1,11 +1,21 @@
-
-from turtle import forward
-import torch.nn as nn
-import torch
+import os
 import librosa
 import numpy as np
 
 from tqdm import tqdm
+
+import sys
+
+import torch
+import torch.nn as nn
+
+if torch.backends.mps.is_available():
+    sys.path.insert(0, '/Users/d.tarasov/workspace/hse/frechet-audio-distance')
+    sys.path.insert(0, '/Users/d.tarasov/workspace/hse/diffusers/src')
+    sys.path.insert(0, '/Users/d.tarasov/workspace/hse/transformers/src')
+else:
+    sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src')
+    sys.path.insert(0, '/home/dtarasov/workspace/hse-audio-dalle2/transformers/src')
 
 import datasets
 from datasets import Audio
@@ -17,7 +27,6 @@ from collections import Counter
 
 MAX_FRAMES = 192
 N_FFT = 128
-
 
 def get_spectrogram(waveform, sample_rate=8000):
     assert sample_rate==8000, "anothoer sample rate is not supported"
@@ -178,8 +187,12 @@ def train_loop(
 
 if __name__ == '__main__':
 
+    print("torch.__path__", torch.__path__)
+    print("torch.backends.cudnn.version()", torch.backends.cudnn.version())
+
     audio_mnist_dataset = datasets.load_from_disk("./audio_mnist_full")
     audio_mnist_dataset_24khz = audio_mnist_dataset.cast_column("audio", Audio(sampling_rate=8000))
+    audio_mnist_dataset_24khz = audio_mnist_dataset_24khz.map(lambda x: { 'label': int(os.path.basename(x['audio']['path']).split('_', maxsplit=1)[0]) })
 
     audio_mnist_dataset_sample = audio_mnist_dataset_24khz
 
@@ -202,7 +215,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     class TrainingConfig:
-        train_batch_size = 128
+        train_batch_size = 64
         learning_rate = 1e-3
 
     config = TrainingConfig()
