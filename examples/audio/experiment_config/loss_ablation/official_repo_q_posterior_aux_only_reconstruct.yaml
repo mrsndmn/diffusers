@@ -5,8 +5,8 @@ decoder_nll_loss_weight: 0.0
 noise_scheduler: optimized_masked_uniform_dummy_q_posterior
 transformer_dropout: 0.3
 apply_wrong_class_reconstruction: True
-wrong_class_reconstruction_min_timestep: 50
-reconstruction_proba: 0.9
+wrong_class_reconstruction_min_timestep: 30
+reconstruction_proba: 0.5
 train_batch_size: 100
 # timesteps_sampling: importance
 save_image_epochs: 50

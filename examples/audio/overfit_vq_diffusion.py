@@ -62,7 +62,7 @@ class TrainingConfig:
     num_train_timesteps = 100
 
     # dataset and iteration
-    dataset_path = "./audio_mnist_full_encodec_processed"
+    dataset_path = "./audio_mnist_full_60_speakers_normalized_encodec_processed"
     train_batch_size = 100
     # eval_batch_size = 20  # how many images to sample during evaluation
     num_epochs = 10000
