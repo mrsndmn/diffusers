@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=2       # Количество ядер CPU, выделенных для одного процесса
 #SBATCH --gpus-per-node=1       # Количество GPU на один узел
 #SBATCH -C type_a|type_b|type_c|type_e
-#SBATCH --time-min=60
+#SBATCH --time-min=120
 
 module purge
 module load Python

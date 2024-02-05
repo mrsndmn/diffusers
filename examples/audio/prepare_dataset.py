@@ -74,7 +74,7 @@ def process_audio(examples):
 
 
 # WARN label в этом датасете сейчас - идентификатор спикера!
-audio_mnist_dataset: datasets.Dataset = load_dataset("audiofolder", data_dir="AudioMNIST/data", split='train')
+audio_mnist_dataset: datasets.Dataset = load_dataset("audiofolder", data_dir="AudioMNIST/data_normalized", split='train')
 
 # сейчас в label хранится идентификатор спикера - делаем по спикерам фильтрацию
 # audio_mnist_dataset = audio_mnist_dataset.filter(lambda x: x['label'] < 10)
@@ -93,4 +93,4 @@ audio_mnist_dataset = audio_mnist_dataset.remove_columns("audio")
 print(audio_mnist_dataset)
 
 # audio_mnist_dataset.save_to_disk("./audio_mnist_full_encodec_processed") # only 10 speakers
-audio_mnist_dataset.save_to_disk("./audio_mnist_full_60_speakers_encodec_processed")
+audio_mnist_dataset.save_to_disk("./audio_mnist_full_60_speakers_normalized_encodec_processed")

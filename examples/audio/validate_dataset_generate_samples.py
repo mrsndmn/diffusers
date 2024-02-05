@@ -46,14 +46,14 @@ with torch.no_grad():
     # audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed_split['test']
 
     collator = DefaultDataCollator()
-    audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed.select(range(0, len(audio_mnist_dataset_24khz_processed), 500))
+    audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed # .select(range(0, len(audio_mnist_dataset_24khz_processed), 500))
     print("audio_mnist_dataset_24khz_processed_test", len(audio_mnist_dataset_24khz_processed_test))
     print("audio_mnist_dataset_24khz_processed_test label", audio_mnist_dataset_24khz_processed_test['label'])
     test_dataloader = torch.utils.data.DataLoader(
         audio_mnist_dataset_24khz_processed_test,
         collate_fn=collator,
         batch_size=num_samples,
-        shuffle=False,
+        shuffle=True,
         # pin_memory=True,
         # num_workers=2,
     )

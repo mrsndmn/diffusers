@@ -42,7 +42,7 @@ encodec_model = EncodecModel.from_pretrained(encodec_model_name).to(device)
 encodec_processor = AutoProcessor.from_pretrained(encodec_model_name)
 print("encodec loaded", datetime.now())
 
-audio_mnist_dataset: datasets.Dataset = load_dataset("audiofolder", data_dir="AudioMNIST/data", split='train')
+audio_mnist_dataset: datasets.Dataset = load_dataset("audiofolder", data_dir="AudioMNIST/data_normalized", split='train')
 
 audio_mnist_dataset = audio_mnist_dataset.filter(lambda x: x['label'] < 10)
 # audio_mnist_dataset = audio_mnist_dataset.select(range(1024))
