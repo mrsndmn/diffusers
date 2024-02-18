@@ -120,7 +120,7 @@ def evaluate(config: TrainingConfig, epoch, pipeline: VQDiffusionAudioTextCondit
         )
         result_metrics.update(iteration_metrics)
 
-    # start from zero
+    # start from max_timesteps
     iteration_metrics = evaluate_with_samples(config, epoch, pipeline)
     result_metrics.update(iteration_metrics)
 
@@ -445,7 +445,7 @@ def train_loop(
 
             add_noise_counter = time.perf_counter()
             scheduler_noise_output = noise_scheduler.add_noise(log_one_hot_audio_codes, timesteps)
-            noisy_audio_codes = scheduler_noise_output['sample']
+            noisy_audio_codes = scheduler_noise_output['sample'] # [  ]
 
             logs['timings/add_noise'] = time.perf_counter() - add_noise_counter
 

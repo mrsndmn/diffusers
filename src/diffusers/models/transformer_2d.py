@@ -110,6 +110,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         self.attention_head_dim = attention_head_dim
         self.output_attentions = output_attentions
 
+        # assert cross_attention_dim == attention_head_dim * num_attention_heads, f'cross_attention_dim must be equals to attention_head_dim * num_attention_heads ({attention_head_dim * num_attention_heads})'
+
         inner_dim = num_attention_heads * attention_head_dim
 
         conv_cls = nn.Conv2d if USE_PEFT_BACKEND else LoRACompatibleConv
@@ -344,7 +346,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
 
         def debug_tensor(name, tens):
-            print(f"{name} ", tens.shape, "is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+            if tens is not None:
+                print(f"{name} ", tens.shape, "is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
 
         debug_tensor('transformer forward hidden_states', hidden_states)
         debug_tensor('transformer forward encoder_hidden_states', encoder_hidden_states)

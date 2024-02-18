@@ -21,7 +21,7 @@ set -o xtrace
 
 #Executable
 
-export PYTHONPATH=/home/dtarasov/workspace/hse-audio-dalle2/huggingface_hub/src:/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src:/home/dtarasov/workspace/hse-audio-dalle2/transformers/src:/home/dtarasov/workspace/hse-audio-dalle2/frechet-audio-distance
+export PYTHONPATH=/home/dtarasov/workspace/hse-audio-dalle2/huggingface_hub/src:/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src:/home/dtarasov/workspace/hse-audio-dalle2/transformers/src:/home/dtarasov/workspace/hse-audio-dalle2/frechet-audio-distance:/home/dtarasov/workspace/hse-audio-dalle2/TorchLRP
 
 srun /home/dtarasov/.conda/envs/discrete_diffusion_diffusers/bin/python3 ./overfit_vq_diffusion.py $@
 # srun /home/dtarasov/.conda/envs/discrete_diffusion_diffusers/bin/accelerate launch --config_file accelerate_configs/single_gpu_config.yaml audio_dalle_full_inference.py $@

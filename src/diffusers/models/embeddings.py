@@ -354,7 +354,7 @@ class ImagePositionalEmbeddings(nn.Module):
         self.width_emb = nn.Embedding(self.width, embed_dim)
 
     def forward(self, index):
-        
+
         def debug_tensor(name, tens):
             print(f"{name} [{tens.shape}] is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
 

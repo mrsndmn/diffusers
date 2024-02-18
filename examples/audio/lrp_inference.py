@@ -26,7 +26,7 @@ else:
 from diffusers import VQDiffusionScheduler, Transformer2DModel, VQDiffusionPipeline
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
-from diffusers.pipelines.deprecated.vq_diffusion.pipeline_vq_diffusion import VQDiffusionAudioTextConditionalPipeline
+from diffusers.pipelines.deprecated.vq_diffusion.pipeline_vq_diffusion import LRPVQDiffusionAudioTextConditionalPipeline
 
 from dataclasses import dataclass
 import torch
@@ -36,7 +36,7 @@ import os
 
 from diffusers.schedulers.scheduling_vq_diffusion import VQDiffusionDenseTrainedDummyQPosteriorScheduler, VQDiffusionSchedulerDummyQPosterior
 
-from overfit_vq_diffusion import TrainingConfig, NUM_TRAIN_TIMESTEPS, BANDWIDTH, SAMPLE_RATE
+from overfit_vq_diffusion import TrainingConfig, BANDWIDTH, SAMPLE_RATE
 
 from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPTextModel, AutoTokenizer
 
@@ -48,6 +48,8 @@ config = TrainingConfig()
 
 dense_dummy_scheduler = False
 
+NUM_TRAIN_TIMESTEPS = 100
+
 if torch.cuda.is_available():
     device = 'cuda'
 elif torch.backends.mps.is_available():
@@ -58,7 +60,7 @@ else:
 if dense_dummy_scheduler:
     variant = "q_posterior_official_repo_aux_only_timesteps_importance_sampling_transitioning_matricies_plus_eye2024-01-07 15:36:11.188800"
 else:
-    variant = "q_posterior_official_repo_aux_only2024-01-07 14:37:35.639452"
+    variant = "q_posterior_official_repo_aux_only_dummy_q_posterior_little2024-02-05 10:43:15.021115"
 
 model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True)
 assert model.is_input_continuous == False, 'transformer is discrete'
@@ -97,7 +99,7 @@ clip_text_model.eval()
 model = model.to(device)
 model.eval()
 
-pipeline = VQDiffusionAudioTextConditionalPipeline(
+pipeline = LRPVQDiffusionAudioTextConditionalPipeline(
     encodec=encodec_model,
     clip_tokenizer=clip_tokenizer,
     clip_text_model=clip_text_model,
@@ -130,7 +132,6 @@ for i in range(audio_values.shape[0]):
     torchaudio.save(f"{generated_samples_path}/{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
 
 print("done")
-
 
 
 # todo eval

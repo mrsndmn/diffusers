@@ -24,6 +24,8 @@ from ..utils.import_utils import is_xformers_available
 from ..utils.torch_utils import maybe_allow_in_graph
 from .lora import LoRACompatibleLinear, LoRALinearLayer
 
+from lrp.functional.residual import ResidualAlpha1Beta0
+from lrp.functional.matmul import MatMulAlpha1Beta0
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -1267,8 +1269,8 @@ class AttnProcessor2_0(nn.Module):
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
 
-        attention_method = F.scaled_dot_product_attention
-        if False: # todo use not optimal attention computation for LRP
+        # attention_method = F.scaled_dot_product_attention
+        if True: # todo use not optimal attention computation for LRP
             attention_method = self.scaled_dot_product_attention
 
         hidden_states = attention_method(
@@ -1287,7 +1289,7 @@ class AttnProcessor2_0(nn.Module):
             hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
 
         if attn.residual_connection:
-            hidden_states = hidden_states + residual
+            hidden_states = ResidualAlpha1Beta0.apply(hidden_states. residual)
 
         hidden_states = hidden_states / attn.rescale_output_factor
 
@@ -1310,12 +1312,15 @@ class AttnProcessor2_0(nn.Module):
                 attn_mask.masked_fill_(attn_mask.logical_not(), float("-inf"))
             else:
                 attn_bias += attn_mask
-        attn_weight = query @ key.transpose(-2, -1) * scale_factor
+
+        # print("query @ key.transpose(-2, -1)", query.shape, key.transpose(-2, -1).shape)
+        attn_weight = MatMulAlpha1Beta0.apply(query, key.transpose(-2, -1))
+        attn_weight = attn_weight * scale_factor
         attn_weight += attn_bias
         attn_weight = self.softmax(attn_weight)
         attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
 
-        return attn_weight @ value
+        return MatMulAlpha1Beta0.apply(attn_weight, value)
 
 
 

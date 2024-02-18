@@ -25,6 +25,7 @@ from .attention_processor import Attention
 from .embeddings import SinusoidalPositionalEmbedding
 from .lora import LoRACompatibleLinear
 from .normalization import AdaLayerNorm, AdaLayerNormContinuous, AdaLayerNormZero, RMSNorm
+from lrp.residual import Residual as LRPResidual
 
 
 def _chunked_feed_forward(
@@ -285,6 +286,8 @@ class BasicTransformerBlock(nn.Module):
         self._chunk_size = None
         self._chunk_dim = 0
 
+        self.residual = LRPResidual()
+
     def set_chunk_feed_forward(self, chunk_size: Optional[int], dim: int = 0):
         # Sets chunk feed-forward
         self._chunk_size = chunk_size
@@ -353,7 +356,7 @@ class BasicTransformerBlock(nn.Module):
         elif self.use_ada_layer_norm_single:
             self_attention = gate_msa * self_attention
 
-        hidden_states = self_attention + hidden_states
+        hidden_states = self.residual(self_attention, hidden_states)
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
 
@@ -391,7 +394,7 @@ class BasicTransformerBlock(nn.Module):
             )
             # print("cross_attention", cross_attention.shape)
             # print("hidden_states", hidden_states.shape)
-            hidden_states = cross_attention + hidden_states
+            hidden_states = self.residual(cross_attention, hidden_states)
 
         # 4. Feed-forward
         if self.use_ada_layer_norm_continuous:
@@ -419,7 +422,7 @@ class BasicTransformerBlock(nn.Module):
         elif self.use_ada_layer_norm_single:
             ff_output = gate_mlp * ff_output
 
-        hidden_states = ff_output + hidden_states
+        hidden_states = self.residual(ff_output, hidden_states)
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
 
