@@ -50,12 +50,16 @@ dense_dummy_scheduler = False
 
 NUM_TRAIN_TIMESTEPS = 100
 
-if torch.cuda.is_available():
-    device = 'cuda'
-elif torch.backends.mps.is_available():
-    device = 'mps'
-else:
-    device = 'cpu'
+# if torch.cuda.is_available():
+#     device = 'cuda'
+# elif torch.backends.mps.is_available():
+#     device = 'mps'
+# else:
+#    device = 'cpu'
+
+# force cpu
+device = 'cpu'
+
 
 if dense_dummy_scheduler:
     variant = "q_posterior_official_repo_aux_only_timesteps_importance_sampling_transitioning_matricies_plus_eye2024-01-07 15:36:11.188800"

@@ -385,6 +385,8 @@ class LRPVQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
         # source_sequence_relevances = [] # will be received from model hook
         # timesteps_relevances = [] # todo
 
+        timesteps_for_lrp = set([99, 98, 75, 50, 25, 1, 0])
+
         for i, t in enumerate(self.progress_bar(timesteps_tensor)):
             # expand the sample if we are doing classifier free guidance
             latent_model_input = sample
@@ -402,13 +404,18 @@ class LRPVQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
 
             model_output = transformer_output.sample
 
-            model_output.backward( torch.ones_like(model_output) / model_output.numel() )
+            print(f"t={t} timesteps_for_lrp={timesteps_for_lrp}, check_t=", t.item() in timesteps_for_lrp)
+            if t.item() in timesteps_for_lrp:
+                lrp_initial = torch.ones_like(model_output) / model_output.numel()
+                print("Going to ocmpute LRP backward!", lrp_initial.sum())
+                model_output.backward( lrp_initial )
 
-            print("LRP encoder_hidden_states.grad.sum() ", encoder_hidden_states.grad.sum())
-            print("LRP sample_grad.sum()                ", self.transformer.source_sequence_relevances[-1].sum())
-            condition_sequence_relevances.append(encoder_hidden_states.grad)
-            encoder_hidden_states.grad = None
-            transformer_output.zero_grad()
+                print(f"[t={t}] LRP encoder_hidden_states.grad.sum() ", encoder_hidden_states.grad.sum())
+                print(f"[t={t}] LRP sample_grad.sum()                ", self.transformer.source_sequence_relevances[-1].sum())
+
+                condition_sequence_relevances.append(encoder_hidden_states.grad)
+                encoder_hidden_states.grad = None
+                self.transformer.zero_grad()
 
             cross_attentions_sum_norm_list.append(transformer_output.cross_attentions_sum_norm)
             self_attentions_sum_norm_list.append(transformer_output.self_attentions_sum_norm)

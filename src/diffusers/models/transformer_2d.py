@@ -249,6 +249,9 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 
         self.gradient_checkpointing = False
 
+        self.softmax = nn.Softmax(dim=-1)
+        self.tensor_log = torch.log
+
         self.init_weights()
 
         return
@@ -477,7 +480,12 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             debug_tensor("hidden_states out", hidden_states)
             debug_tensor("logits before logsotmax", logits)
 
-            output = F.log_softmax(logits, dim=1).float()
+            # crutch for LRP softmax
+            logits_permuted = logits.permute(0, 2, 1)
+            output = self.tensor_log(self.softmax(logits_permuted))
+            output = output.permute(0, 2, 1) # restore transposed axis
+
+            # output = F.log_softmax(logits, dim=1).float()
 
         if self.is_input_patches:
             if self.config.norm_type != "ada_norm_single":
