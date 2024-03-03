@@ -24,6 +24,7 @@ from ..utils import is_torch_version
 from .activations import get_activation
 from .embeddings import CombinedTimestepLabelEmbeddings, PixArtAlphaCombinedTimestepSizeEmbeddings
 
+from lrp.mul import Mul
 
 class AdaLayerNorm(nn.Module):
     r"""
@@ -40,6 +41,7 @@ class AdaLayerNorm(nn.Module):
         self.silu = nn.SiLU()
         self.linear = nn.Linear(embedding_dim, embedding_dim * 2)
         self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False)
+        self.mul = Mul()
 
     def forward(self, x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
         # x ~ [ bs, ... ]
@@ -54,7 +56,7 @@ class AdaLayerNorm(nn.Module):
         # print("scale", scale.shape, "shift", shift.shape)
         x_norm = self.norm(x) # [ bs, num_pixels, embedding_dim ]
         # print("x_norm", x_norm.shape)
-        x = x_norm * (1 + scale) + shift
+        x = self.mul(x_norm, (1 + scale) + shift)
         return x
 
 

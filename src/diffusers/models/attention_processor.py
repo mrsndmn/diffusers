@@ -24,8 +24,10 @@ from ..utils.import_utils import is_xformers_available
 from ..utils.torch_utils import maybe_allow_in_graph
 from .lora import LoRACompatibleLinear, LoRALinearLayer
 
-from lrp.functional.residual import ResidualAlpha1Beta0
-from lrp.functional.matmul import MatMulAlpha1Beta0
+from lrp.residual import Residual
+from lrp.matmul import MatMul
+from lrp.mul_const import MulConst
+from lrp.add_const import AddConst
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -1209,6 +1211,10 @@ class AttnProcessor2_0(nn.Module):
             raise ImportError("AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0.")
 
         self.softmax = nn.Softmax(dim=-1)
+        self.residual = Residual()
+        self.mat_mul = MatMul()
+        self.mul_const = MulConst()
+        self.add_const = AddConst()
 
     def __call__(
         self,
@@ -1289,7 +1295,7 @@ class AttnProcessor2_0(nn.Module):
             hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
 
         if attn.residual_connection:
-            hidden_states = ResidualAlpha1Beta0.apply(hidden_states. residual)
+            hidden_states = self.residual.apply(hidden_states. residual)
 
         hidden_states = hidden_states / attn.rescale_output_factor
 
@@ -1314,13 +1320,13 @@ class AttnProcessor2_0(nn.Module):
                 attn_bias += attn_mask
 
         # print("query @ key.transpose(-2, -1)", query.shape, key.transpose(-2, -1).shape)
-        attn_weight = MatMulAlpha1Beta0.apply(query, key.transpose(-2, -1))
-        attn_weight = attn_weight * scale_factor
-        attn_weight += attn_bias
+        attn_weight = self.mat_mul(query, key.transpose(-2, -1))
+        attn_weight = self.mul_const(attn_weight, scale_factor)
+        attn_weight = self.add_const(attn_weight, attn_bias)
         attn_weight = self.softmax(attn_weight)
         attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
 
-        return MatMulAlpha1Beta0.apply(attn_weight, value)
+        return self.mat_mul(attn_weight, value)
 
 
 
