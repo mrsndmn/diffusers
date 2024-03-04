@@ -27,7 +27,7 @@ import os
 import torchaudio
 
 import datasets
-from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, CLIPTextModel, AutoTokenizer
+from transformers import EncodecModel, AutoProcessor, DefaultDataCollator, DataCollatorWithPadding, CLIPTextModel, AutoTokenizer
 from diffusers import Transformer2DModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
 
@@ -47,7 +47,6 @@ from audio_mnist_classifier import AudioMNISTModel, get_spectrogram
 from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot, multinomial_kl, log_categorical, VQDiffusionDenseTrainedDummyQPosteriorScheduler, VQDiffusionSchedulerDummyQPosterior, VQDiffusionScheduler
 
 NUM_VECTORS_IN_CODEBOOK = 1024
-MAX_AUDIO_CODES_LENGTH = 256
 MAX_TRAIN_SAMPLES = 10
 SAMPLE_RATE = 24000
 BANDWIDTH = 3.0
@@ -57,7 +56,7 @@ script_start_time = datetime.now()
 @dataclass
 class TrainingConfig:
 
-    sample_size = MAX_AUDIO_CODES_LENGTH  # the generated image resolution
+    sample_size = 256  # the generated image resolution or seq_len of encodec codes
 
     num_train_timesteps = 100
 
@@ -627,7 +626,7 @@ def train_loop(
             unwrapped_model = accelerator.unwrap_model(model)
             unwrapped_model.eval()
 
-            if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
+            if config.save_image_epochs > 0 and ((epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1):
                 with torch.no_grad():
                     pipeline = VQDiffusionAudioTextConditionalPipeline(
                         encodec=encodec_model,
@@ -676,8 +675,8 @@ if __name__ == '__main__':
     print("config.noise_scheduler", config.noise_scheduler)
 
     print("loading dataset", datetime.now())
-    audio_mnist_dataset_24khz_processed = datasets.load_from_disk(config.dataset_path)
-    # audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz_processed.select(range(8))
+    audio_24khz_processed = datasets.load_from_disk(config.dataset_path)
+    # audio_24khz_processed = audio_24khz_processed.select(range(8))
 
     print("loaded and casted dataset", datetime.now())
 
@@ -691,15 +690,23 @@ if __name__ == '__main__':
     clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
 
-    collator = DefaultDataCollator()
 
-    audio_mnist_dataset_24khz_processed_split = audio_mnist_dataset_24khz_processed.train_test_split(test_size=config.num_evaluation_samples, seed=1)
-    audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed_split['test']
-    audio_mnist_dataset_24khz_processed = audio_mnist_dataset_24khz_processed_split['train']
 
-    print("audio_mnist_dataset_24khz_processed", len(audio_mnist_dataset_24khz_processed))
+    collator = DataCollatorWithPadding(clip_tokenizer, 'longest')
+
+    print("audio_24khz_processed", audio_24khz_processed)
+    columns_to_leave = set([ 'audio_codes', 'attention_mask', 'input_ids' ])
+    audio_24khz_processed = audio_24khz_processed.remove_columns(set(audio_24khz_processed.features.keys()) - columns_to_leave)
+
+    print("audio_24khz_processed", audio_24khz_processed)
+
+    audio_mnist_dataset_24khz_processed_split = audio_24khz_processed.train_test_split(test_size=config.num_evaluation_samples, seed=1)
+    audio_24khz_processed_test = audio_mnist_dataset_24khz_processed_split['test']
+    audio_24khz_processed      = audio_mnist_dataset_24khz_processed_split['train']
+
+    print("audio_24khz_processed", len(audio_24khz_processed))
     train_dataloader = torch.utils.data.DataLoader(
-        audio_mnist_dataset_24khz_processed, #.select(range(100)),
+        audio_24khz_processed, #.select(range(100)),
         collate_fn=collator,
         batch_size=config.train_batch_size,
         shuffle=True,
@@ -707,9 +714,9 @@ if __name__ == '__main__':
         # num_workers=2,
     )
 
-    print("audio_mnist_dataset_24khz_processed_test", audio_mnist_dataset_24khz_processed_test[0])
+    print("audio_24khz_processed_test", audio_24khz_processed_test[0])
     test_dataloader = torch.utils.data.DataLoader(
-        audio_mnist_dataset_24khz_processed_test,
+        audio_24khz_processed_test,
         collate_fn=collator,
         batch_size=config.num_evaluation_samples,
         shuffle=False,
@@ -717,9 +724,8 @@ if __name__ == '__main__':
         # num_workers=2,
     )
 
-
     height = 1
-    width = MAX_AUDIO_CODES_LENGTH
+    width = config.sample_size
     model_kwargs = {
         "attention_bias": True,
         "cross_attention_dim": clip_text_model.config.hidden_size,

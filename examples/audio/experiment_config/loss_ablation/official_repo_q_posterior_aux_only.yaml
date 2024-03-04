@@ -1,4 +1,4 @@
-experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior_little"
+experiment_name: "q_posterior_official_repo_aux_only_dummy_q_posterior"
 auxiliary_loss_weight: 1.0
 kl_loss_weight: 0.0
 decoder_nll_loss_weight: 0.0
