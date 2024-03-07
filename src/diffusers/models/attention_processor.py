@@ -1275,9 +1275,10 @@ class AttnProcessor2_0(nn.Module):
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
 
-        # attention_method = F.scaled_dot_product_attention
-        if True: # todo use not optimal attention computation for LRP
-            attention_method = self.scaled_dot_product_attention
+        attention_method = F.scaled_dot_product_attention
+        # to use LRP need to enable
+        # if True: # todo use not optimal attention computation for LRP
+        #     attention_method = self.scaled_dot_product_attention
 
         hidden_states = attention_method(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
@@ -1314,6 +1315,7 @@ class AttnProcessor2_0(nn.Module):
             attn_bias.to(query.dtype)
 
         if attn_mask is not None:
+            raise Exception("attn_mask is not supported")
             if attn_mask.dtype == torch.bool:
                 attn_mask.masked_fill_(attn_mask.logical_not(), float("-inf"))
             else:

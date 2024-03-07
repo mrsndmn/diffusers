@@ -59,10 +59,8 @@ elif torch.backends.mps.is_available():
 else:
     device = 'cpu'
 
-if dense_dummy_scheduler:
-    variant = "q_posterior_official_repo_aux_only_timesteps_importance_sampling_transitioning_matricies_plus_eye2024-01-07 15:36:11.188800"
-else:
-    variant = "q_posterior_official_repo_aux_only_dummy_q_posterior_reconstruct_30_monitoring2024-02-05 10:45:21.810084"
+variant = "audiocaps_aux_only_dummy_q_posterior2024-03-06 11:05:07.560275"
+# variant = "audiocaps_aux_only_dummy_q_posterior_1bs2024-03-06 00:29:14.172758"
 
 model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True, num_embeds_ada_norm=100, output_attentions=True)
 assert model.is_input_continuous == False, 'transformer is discrete'
@@ -109,12 +107,11 @@ pipeline = VQDiffusionAudioTextConditionalPipeline(
     scheduler=noise_scheduler,
 )
 
-condition_classes = list(range(10))
-text_condition = [ str(x) for x in condition_classes ]
+text_condition = [ 'A woman talks nearby as water pours' ]
 pipeline_out: AudioCodesPipelineOutput = pipeline(
     num_inference_steps=NUM_TRAIN_TIMESTEPS,
     bandwidth=BANDWIDTH,
-    num_generated_audios = 10,
+    num_generated_audios = len(text_condition),
     text_condition=text_condition,
     scheduler_step_with_gumbel_noised = False,
     scheduler_step_no_q_posterior = True,
@@ -130,7 +127,8 @@ generated_samples_path.mkdir(parents=True, exist_ok=True)
 print("will be saved to", generated_samples_path)
 
 for i in range(audio_values.shape[0]):
-    current_text_condition = text_condition[i]
+    current_text_condition:str = text_condition[i]
+    current_text_condition = current_text_condition.replace(' ', '_')
     audio_wave = audio_values[i]
     torchaudio.save(f"{generated_samples_path}/{current_text_condition}.wav", audio_wave.to('cpu'), sample_rate=SAMPLE_RATE)
 

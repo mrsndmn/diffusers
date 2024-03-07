@@ -13,15 +13,14 @@ module load CUDA/10.2
 module list
 
 source /opt/software/python/anaconda/2021_11/bin/deactivate
-source /opt/software/python/anaconda/2021_11/bin/activate audio_dalle2
+source /opt/software/python/anaconda/2021_11/bin/activate discrete_diffusion_diffusers
 nvidia-smi
 
 set -eo pipefail
 set -o xtrace
 
 #Executable
+export PYTHONPATH=/home/dtarasov/workspace/hse-audio-dalle2/huggingface_hub/src:/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src:/home/dtarasov/workspace/hse-audio-dalle2/transformers/src:/home/dtarasov/workspace/hse-audio-dalle2/frechet-audio-distance:/home/dtarasov/workspace/hse-audio-dalle2/TorchLRP
 
-export PYTHONPATH=/home/dtarasov/workspace/hse-audio-dalle2/huggingface_hub/src:/home/dtarasov/workspace/hse-audio-dalle2/diffusers/src:/home/dtarasov/workspace/hse-audio-dalle2/transformers/src:/home/dtarasov/workspace/hse-audio-dalle2/frechet-audio-distance
-
-srun /home/dtarasov/.conda/envs/audio_dalle2/bin/python3 official_dummy_inference.py $@
-# srun /home/dtarasov/.conda/envs/audio_dalle2/bin/accelerate launch --config_file accelerate_configs/single_gpu_config.yaml audio_dalle_full_inference.py $@
+srun /home/dtarasov/.conda/envs/discrete_diffusion_diffusers/bin/python3 official_dummy_inference.py $@
+# srun /home/dtarasov/.conda/envs/discrete_diffusion_diffusers/bin/accelerate launch --config_file accelerate_configs/single_gpu_config.yaml audio_dalle_full_inference.py $@

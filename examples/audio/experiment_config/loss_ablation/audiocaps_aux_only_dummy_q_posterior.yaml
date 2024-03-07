@@ -5,6 +5,8 @@ decoder_nll_loss_weight: 0.0
 noise_scheduler: optimized_masked_uniform_dummy_q_posterior
 dataset_path: /home/dtarasov/workspace/hse-audio-dalle2/data/audiocaps_train_processed/
 sample_size: 2560
-train_batch_size: 10
+train_batch_size: 25
+lr_warmup_steps: 20000
+learning_rate: 0.00005
 save_image_epochs: -1
 save_model_epochs: 1

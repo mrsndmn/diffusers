@@ -460,6 +460,8 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         assert log_p_x_0.shape[1] == self.num_embed - 1, f'q_posterior log_p_x_0.shape[1] expected to be equal to {self.num_embed - 1}, but got shape {log_p_x_0.shape}'
 
         def print_tensor_statistics(tensor_name, tensor):
+            if tensor.dtype == torch.bool:
+                tensor = tensor.float()
             print(f"{tensor_name} [{tensor.shape}] [{tensor.device}]: min={tensor.min():.4f}, max={tensor.max():.4f}, median={tensor.median():.4f}, mean={tensor.float().mean():.4f}")
 
         log_q_x_t_given_x_0 = self.log_Q_t_transitioning_to_known_class(

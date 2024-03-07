@@ -5,6 +5,9 @@ import sys
 import torchaudio
 from pathlib import Path
 
+from transformers import AutoTokenizer
+
+
 if torch.backends.mps.is_available():
     sys.path.insert(0, '/Users/d.tarasov/workspace/hse/frechet-audio-distance')
     sys.path.insert(0, '/Users/d.tarasov/workspace/hse/diffusers/src')
@@ -16,9 +19,9 @@ else:
 from transformers import EncodecModel, AutoProcessor
 from diffusers.schedulers.scheduling_vq_diffusion import VQDiffusionSchedulerDummyQPosterior
 from diffusers.schedulers.scheduling_vq_diffusion import index_to_log_onehot
-from transformers import DefaultDataCollator
+from transformers import DefaultDataCollator, DataCollatorWithPadding
 
-audio_mnist_dataset_24khz_processed = datasets.load_from_disk("./audio_mnist_full_encodec_processed")
+audio_mnist_dataset_24khz_processed = datasets.load_from_disk("/home/dtarasov/workspace/hse-audio-dalle2/data/audiocaps_train_processed/")
 
 encodec_model_name = "facebook/encodec_24khz"
 
@@ -45,10 +48,15 @@ with torch.no_grad():
     # audio_mnist_dataset_24khz_processed_split = audio_mnist_dataset_24khz_processed.train_test_split(test_size=num_samples, seed=2)
     # audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed_split['test']
 
-    collator = DefaultDataCollator()
+    clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    collator = DataCollatorWithPadding(clip_tokenizer, 'longest')
     audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed # .select(range(0, len(audio_mnist_dataset_24khz_processed), 500))
     print("audio_mnist_dataset_24khz_processed_test", len(audio_mnist_dataset_24khz_processed_test))
-    print("audio_mnist_dataset_24khz_processed_test label", audio_mnist_dataset_24khz_processed_test['label'])
+    print("audio_mnist_dataset_24khz_processed_test caption", audio_mnist_dataset_24khz_processed_test['caption'])
+
+    columns_to_leave = set([ 'audio_codes', 'attention_mask', 'input_ids' ])
+    audio_mnist_dataset_24khz_processed_test = audio_mnist_dataset_24khz_processed_test.remove_columns(set(audio_mnist_dataset_24khz_processed_test.features.keys()) - columns_to_leave)
+
     test_dataloader = torch.utils.data.DataLoader(
         audio_mnist_dataset_24khz_processed_test,
         collate_fn=collator,
@@ -60,7 +68,7 @@ with torch.no_grad():
 
     test_batch = next(iter(test_dataloader))
     audio_codes_to_evaluate_start = test_batch['audio_codes']
-    print("test_batch['labels']", test_batch['labels'])
+    # print("test_batch['caption']", test_batch['caption'])
 
     audio_codes_to_evaluate_start = audio_codes_to_evaluate_start.reshape([num_samples, -1])
 
@@ -93,7 +101,7 @@ with torch.no_grad():
             audio_wave = encodec_model.decode(audio_codes, [None], padding_mask, return_dict=True).audio_values
             print("audio_wave", audio_wave.shape)
 
-            current_text_condition = str(test_batch['labels'][i].item())
+            current_text_condition = str(i)
 
             SAMPLE_RATE = 24000
 

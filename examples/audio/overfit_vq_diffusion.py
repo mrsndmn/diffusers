@@ -300,6 +300,9 @@ def evaluate_with_samples(
     # image_grid.save()
 
 def print_tensor_statistics(tensor_name, tensor):
+    if tensor.dtype == torch.bool:
+        tensor = tensor.float()
+
     print(f"{tensor_name} [{tensor.shape}] [{tensor.device}]: min={tensor.min():.4f}, max={tensor.max():.4f}, median={tensor.median():.4f}, mean={tensor.float().mean():.4f}")
 
 
@@ -386,7 +389,6 @@ def train_loop(
                 attention_mask                    = batch['attention_mask'][:bs]
                 input_ids                         = batch['input_ids'][:bs]
 
-
                 timesteps = timesteps_sampler.sample(bs)
 
                 timesteps_to_reconstruct_mask = timesteps > config.wrong_class_reconstruction_min_timestep
@@ -405,6 +407,8 @@ def train_loop(
                     audio_codes_reconstruction_target[timesteps_to_reconstruct_mask] = batch["audio_codes"][bs:][timesteps_to_reconstruct_mask]
                     attention_mask[timesteps_to_reconstruct_mask]                    = batch['attention_mask'][bs:][timesteps_to_reconstruct_mask]
                     input_ids[timesteps_to_reconstruct_mask]                         = batch['input_ids'][bs:][timesteps_to_reconstruct_mask]
+
+            attention_mask = attention_mask.bool()
 
 
             # Sample noise to add to the images
@@ -458,6 +462,7 @@ def train_loop(
                 log_x0_reconstructed = model(
                     hidden_states=noisy_audio_codes,
                     encoder_hidden_states=clip_outputs.last_hidden_state,
+                    encoder_attention_mask=attention_mask,
                     timestep=timesteps,
                     return_dict=False,
                 )[0]
@@ -676,7 +681,7 @@ if __name__ == '__main__':
 
     print("loading dataset", datetime.now())
     audio_24khz_processed = datasets.load_from_disk(config.dataset_path)
-    # audio_24khz_processed = audio_24khz_processed.select(range(8))
+    # audio_24khz_processed = audio_24khz_processed.select(range(100))
 
     print("loaded and casted dataset", datetime.now())
 
@@ -688,8 +693,6 @@ if __name__ == '__main__':
 
     clip_text_model = CLIPTextModel.from_pretrained("openai/clip-vit-base-patch32")
     clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-
-
 
 
     collator = DataCollatorWithPadding(clip_tokenizer, 'longest')
@@ -730,12 +733,12 @@ if __name__ == '__main__':
         "attention_bias": True,
         "cross_attention_dim": clip_text_model.config.hidden_size,
         "attention_head_dim": 96,
-        "num_attention_heads": 6,
+        "num_attention_heads": 8,
         "num_vector_embeds": NUM_VECTORS_IN_CODEBOOK+1,
         "num_embeds_ada_norm": config.num_train_timesteps,
         "sample_size": width,
         "height": height,
-        "num_layers": 2,
+        "num_layers": 12,
         "activation_fn": "geglu-approximate",
         "output_attentions": True,
         "dropout": config.transformer_dropout,
