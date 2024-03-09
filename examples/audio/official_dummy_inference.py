@@ -59,8 +59,9 @@ elif torch.backends.mps.is_available():
 else:
     device = 'cpu'
 
-variant = "audiocaps_aux_only_dummy_q_posterior2024-03-06 11:05:07.560275"
+# variant = "audiocaps_aux_only_dummy_q_posterior2024-03-06 11:05:07.560275"
 # variant = "audiocaps_aux_only_dummy_q_posterior_1bs2024-03-06 00:29:14.172758"
+variant = "audiocaps_aux_only_dummy_q_posterior2024-03-06 23:21:16.744646"
 
 model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True, num_embeds_ada_norm=100, output_attentions=True)
 assert model.is_input_continuous == False, 'transformer is discrete'
@@ -107,7 +108,8 @@ pipeline = VQDiffusionAudioTextConditionalPipeline(
     scheduler=noise_scheduler,
 )
 
-text_condition = [ 'A woman talks nearby as water pours' ]
+# text_condition = [ 'A woman talks nearby as water pours' ]
+text_condition = [ 'Woman talks nearby as water pours', 'Person is whistling', 'The sizzling of food while a dish is clanking', 'Someone has a hiccup while typing' ]
 pipeline_out: AudioCodesPipelineOutput = pipeline(
     num_inference_steps=NUM_TRAIN_TIMESTEPS,
     bandwidth=BANDWIDTH,

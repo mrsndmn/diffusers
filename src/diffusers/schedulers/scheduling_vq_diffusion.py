@@ -263,10 +263,10 @@ class VQDiffusionScheduler(SchedulerMixin, ConfigMixin):
         # timesteps = timesteps.clone()
         # timesteps[timesteps < 0] = 0
 
-        log_cumprod_at = extract(self.log_cumprod_at, timesteps, log_one_hot_x_0_probas.shape)         # at~
-        log_cumprod_bt = extract(self.log_cumprod_bt, timesteps, log_one_hot_x_0_probas.shape)         # bt~
-        log_cumprod_ct = extract(self.log_cumprod_ct, timesteps, log_one_hot_x_0_probas.shape)         # ct~
-        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, timesteps, log_one_hot_x_0_probas.shape)       # 1-ct~
+        log_cumprod_at = extract(self.log_cumprod_at, timesteps, log_one_hot_x_0_probas.shape).to(log_one_hot_x_0_probas.device)                   # at~
+        log_cumprod_bt = extract(self.log_cumprod_bt, timesteps, log_one_hot_x_0_probas.shape).to(log_one_hot_x_0_probas.device)                   # bt~
+        log_cumprod_ct = extract(self.log_cumprod_ct, timesteps, log_one_hot_x_0_probas.shape).to(log_one_hot_x_0_probas.device)                   # ct~
+        log_1_min_cumprod_ct = extract(self.log_1_min_cumprod_ct, timesteps, log_one_hot_x_0_probas.shape).to(log_one_hot_x_0_probas.device)       # 1-ct~
 
         # build \bar{Q_t} v(x_0) - formula 8 https://arxiv.org/pdf/2111.14822.pdf
         log_one_hot_x_0_probas_at = log_one_hot_x_0_probas[:,:-1,:]+log_cumprod_at

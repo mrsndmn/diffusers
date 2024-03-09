@@ -159,6 +159,9 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
             assert clip_input_ids      is not None, f'clip_input_ids is required while text_condition is None'
             assert clip_attention_mask is not None, f'clip_attention_mask is required while text_condition is None'
 
+        # clip_attention_mask
+        print("clip_attention_mask.dtype", clip_attention_mask.dtype)
+        clip_attention_mask = clip_attention_mask.bool()
         clip_outputs = self.clip_text_model(input_ids=clip_input_ids, attention_mask=clip_attention_mask)
         encoder_hidden_states = clip_outputs.last_hidden_state
 
@@ -178,6 +181,7 @@ class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
             transformer_output: Transformer2DModelOutput = self.transformer(
                 hidden_states=latent_model_input,
                 encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=clip_attention_mask,
                 timestep=t,
             )
 

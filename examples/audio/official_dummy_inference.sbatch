@@ -4,7 +4,7 @@
 #SBATCH --ntasks-per-node=1     # Количество процессов на один узел
 #SBATCH --cpus-per-task=2       # Количество ядер CPU, выделенных для одного процесса
 #SBATCH --gpus-per-node=1       # Количество GPU на один узел
-#SBATCH -C type_a|type_b|type_c|type_e
+#SBATCH -C type_a|type_b|type_c|type_e|type_e_debug
 #SBATCH --time-min=60
 
 module purge

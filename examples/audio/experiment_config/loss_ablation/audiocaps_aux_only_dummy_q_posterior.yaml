@@ -1,12 +1,28 @@
-experiment_name: "audiocaps_aux_only_dummy_q_posterior"
+experiment_name: "audiocaps_aux_only_dummy_q_posterior_2gpu"
+
+# loss
 auxiliary_loss_weight: 1.0
 kl_loss_weight: 0.0
 decoder_nll_loss_weight: 0.0
+
+# model
+transformer_num_layers: 12
 noise_scheduler: optimized_masked_uniform_dummy_q_posterior
+
+# eval
+eval_classifier_path: null
+fad_target_dir: '/home/dtarasov/workspace/hse-audio-dalle2/data/audiocaps_test/'
+fad_background_embds_path: '/home/dtarasov/workspace/hse-audio-dalle2/data/audiocaps_test/frechet_embeddings.npy'
+
+# data
 dataset_path: /home/dtarasov/workspace/hse-audio-dalle2/data/audiocaps_train_processed/
+restore_weights: audiocaps_aux_only_dummy_q_posterior2024-03-06 23:21:16.744646
 sample_size: 2560
+
+# training
 train_batch_size: 25
-lr_warmup_steps: 20000
-learning_rate: 0.00005
+gradient_accumulation_steps: 1
+lr_warmup_steps: 1
+learning_rate: 0.0001
 save_image_epochs: -1
 save_model_epochs: 1

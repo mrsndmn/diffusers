@@ -91,6 +91,15 @@ class TrainingConfig:
     experiment_name = "anon"
     output_dir = "ddpm-audio-mnist-128"  # the model name locally and on the HF Hub
 
+    # model
+    restore_weights = None
+    transformer_num_layers = 2
+
+    # eval
+    fad_target_dir = "audio_mnist_full/audios/"
+    fad_background_embds_path = "audio_mnist_full/audios/frechet_embeddings.npy"
+    eval_classifier_path = "audio_mnist_classifier.pth"
+
     # losses
     auxiliary_loss_weight = 0.01
     kl_loss_weight = 0.1
@@ -220,12 +229,12 @@ def evaluate_with_samples(
         verbose=False,
     )
 
-    target_dir = "audio_mnist_full/audios/"
+    target_dir = config.fad_target_dir
     try:
         fad_score = frechet.score(
             target_dir,
             generated_samples_path,
-            background_embds_path="audio_mnist_full/audios/frechet_embeddings.npy",
+            background_embds_path=config.fad_background_embds_path,
         )
     except ValueError as ve:
         # known error
@@ -240,40 +249,45 @@ def evaluate_with_samples(
     if fad_score < 0:
         raise ValueError(f"Fad score cant be negative: generated_samples_path={generated_samples_path}, target_dir={target_dir}")
 
+
     evaluate_classifier_counter = time.perf_counter()
-    audio_mnist_state_dict = torch.load("audio_mnist_classifier.pth", map_location='cpu')
-    audio_mnist_classifier = AudioMNISTModel()
-    audio_mnist_classifier.load_state_dict(audio_mnist_state_dict)
-    audio_mnist_classifier.to(audio_values.device)
-    audio_mnist_classifier.eval()
+    eval_classifier_accuracy = 0.0
+    eval_classifier_perplexity = 0.0
+    if config.eval_classifier_path is not None:
+        audio_mnist_state_dict = torch.load(config.eval_classifier_path, map_location='cpu')
+        audio_mnist_classifier = AudioMNISTModel()
+        audio_mnist_classifier.load_state_dict(audio_mnist_state_dict)
+        audio_mnist_classifier.to(audio_values.device)
+        audio_mnist_classifier.eval()
 
-    audio_values_spectrograms = []
-    new_sample_rate = 8000
-    resampler = torchaudio.transforms.Resample(orig_freq=SAMPLE_RATE, new_freq=new_sample_rate).to(audio_values.device)
+        audio_values_spectrograms = []
+        new_sample_rate = 8000
+        resampler = torchaudio.transforms.Resample(orig_freq=SAMPLE_RATE, new_freq=new_sample_rate).to(audio_values.device)
 
-    for i in range(audio_values.shape[0]):
-        current_text_condition = text_condition[i]
-        current_waveform = audio_values[i]
-        resmpled_current_waveform = resampler(current_waveform)
-        # torchaudio.save(f"{test_dir}/{script_start_timestep}/{epoch}/{current_text_condition}_for_classifier.wav", resmpled_current_waveform.to('cpu'), sample_rate=new_sample_rate)
-        resmpled_current_waveform_np = resmpled_current_waveform[0].cpu().numpy()
-        spectrogram_t = torch.tensor(get_spectrogram(resmpled_current_waveform_np, sample_rate=new_sample_rate), device=audio_values.device)
-        audio_values_spectrograms.append(spectrogram_t.float())
+        for i in range(audio_values.shape[0]):
+            current_text_condition = text_condition[i]
+            current_waveform = audio_values[i]
+            resmpled_current_waveform = resampler(current_waveform)
+            # torchaudio.save(f"{test_dir}/{script_start_timestep}/{epoch}/{current_text_condition}_for_classifier.wav", resmpled_current_waveform.to('cpu'), sample_rate=new_sample_rate)
+            resmpled_current_waveform_np = resmpled_current_waveform[0].cpu().numpy()
+            spectrogram_t = torch.tensor(get_spectrogram(resmpled_current_waveform_np, sample_rate=new_sample_rate), device=audio_values.device)
+            audio_values_spectrograms.append(spectrogram_t.float())
 
-    audio_values_spectrograms = torch.cat(audio_values_spectrograms, dim=0)
-    audio_values_spectrograms = audio_values_spectrograms.unsqueeze(1)
-    print("audio_values_spectrograms.shape", audio_values_spectrograms.shape)
+        audio_values_spectrograms = torch.cat(audio_values_spectrograms, dim=0)
+        audio_values_spectrograms = audio_values_spectrograms.unsqueeze(1)
+        print("audio_values_spectrograms.shape", audio_values_spectrograms.shape)
 
-    classiier_logits = audio_mnist_classifier(audio_values_spectrograms)
-    classiier_probas = F.softmax(classiier_logits, dim=-1)
-    classiier_classes = classiier_probas.max(dim=-1).indices
-    print("classiier_classes", classiier_classes)
+        classiier_logits = audio_mnist_classifier(audio_values_spectrograms)
+        classiier_probas = F.softmax(classiier_logits, dim=-1)
+        classiier_classes = classiier_probas.max(dim=-1).indices
+        print("classiier_classes", classiier_classes)
 
-    negative_log_likelihood = F.cross_entropy(classiier_logits, torch.tensor(condition_classes, device=classiier_logits.device))
-    eval_classifier_perplexity = torch.exp(negative_log_likelihood.detach()).item()
-    print("eval_classifier_perplexity", eval_classifier_perplexity)
+        negative_log_likelihood = F.cross_entropy(classiier_logits, torch.tensor(condition_classes, device=classiier_logits.device))
+        eval_classifier_perplexity = torch.exp(negative_log_likelihood.detach()).item()
+        print("eval_classifier_perplexity", eval_classifier_perplexity)
 
-    eval_classifier_accuracy = (classiier_classes == torch.tensor(condition_classes, device=classiier_classes.device)).float().mean().item()
+        eval_classifier_accuracy = (classiier_classes == torch.tensor(condition_classes, device=classiier_classes.device)).float().mean().item()
+
     timings_evaluate_classifier_counter = time.perf_counter() - evaluate_classifier_counter
 
 
@@ -426,6 +440,7 @@ def train_loop(
                 print_tensor_statistics("input_ids", input_ids)
                 print_tensor_statistics("attention_mask", attention_mask)
 
+                clip_text_model = clip_text_model.to(input_ids.device)
                 clip_outputs = clip_text_model(input_ids=input_ids, attention_mask=attention_mask)
             logs['timings/calc_clip_text_embeddings'] = time.perf_counter() - calc_clip_text_embeddings_counter
 
@@ -738,15 +753,21 @@ if __name__ == '__main__':
         "num_embeds_ada_norm": config.num_train_timesteps,
         "sample_size": width,
         "height": height,
-        "num_layers": 12,
+        "num_layers": config.transformer_num_layers,
         "activation_fn": "geglu-approximate",
         "output_attentions": True,
         "dropout": config.transformer_dropout,
     }
-
     print("model_kwargs", model_kwargs)
 
-    model = Transformer2DModel(**model_kwargs)
+
+    if config.restore_weights is not None:
+        print(f"restore model weights from {config.restore_weights}")
+        model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=config.restore_weights, use_safetensors=True, num_embeds_ada_norm=100, )
+    else:
+        model = Transformer2DModel(**model_kwargs)
+
+
     assert model.is_input_continuous == False, 'transformer is discrete'
 
     if torch.cuda.is_available():
