@@ -59,11 +59,12 @@ elif torch.backends.mps.is_available():
 else:
     device = 'cpu'
 
-# variant = "audiocaps_aux_only_dummy_q_posterior2024-03-06 11:05:07.560275"
-# variant = "audiocaps_aux_only_dummy_q_posterior_1bs2024-03-06 00:29:14.172758"
-variant = "audiocaps_aux_only_dummy_q_posterior2024-03-06 23:21:16.744646"
+# variant = "audiocaps_aux_only_dummy_q_posterior_2gpu_3l2024-03-09 23:26:47.104036" # 3l
+variant = "audiocaps_aux_only_dummy_q_posterior_2gpu_3l_dropout2024-03-10 11:04:44.281792" # 3l + do
+# variant = 'audiocaps_aux_only_dummy_q_posterior_2gpu_6l2024-03-09 23:23:18.709796' # 6l
+# variant = 'audiocaps_aux_only_dummy_q_posterior_2gpu_lr5em42024-03-09 18:37:22.351615' # 12l
 
-model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True, num_embeds_ada_norm=100, output_attentions=True)
+model = Transformer2DModel.from_pretrained("ddpm-audio-mnist-128/", variant=variant, use_safetensors=True, num_embeds_ada_norm=100, output_attentions=True, strict=True)
 assert model.is_input_continuous == False, 'transformer is discrete'
 
 
@@ -109,7 +110,7 @@ pipeline = VQDiffusionAudioTextConditionalPipeline(
 )
 
 # text_condition = [ 'A woman talks nearby as water pours' ]
-text_condition = [ 'Woman talks nearby as water pours', 'Person is whistling', 'The sizzling of food while a dish is clanking', 'Someone has a hiccup while typing' ]
+text_condition = [ 'A woman talks nearby as water pours', 'Woman talks nearby as water pours', 'Person is whistling', 'The sizzling of food while a dish is clanking', 'Someone has a hiccup while typing' ]
 pipeline_out: AudioCodesPipelineOutput = pipeline(
     num_inference_steps=NUM_TRAIN_TIMESTEPS,
     bandwidth=BANDWIDTH,

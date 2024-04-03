@@ -1309,26 +1309,28 @@ class AttnProcessor2_0(nn.Module):
         scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
         attn_bias = torch.zeros(L, S, dtype=query.dtype, device=device)
         if is_causal:
-            assert attn_mask is None
+            # for casual L == S
+            # and we want to have triu mask
+            # for parallel transformer training
             temp_mask = torch.ones(L, S, dtype=torch.bool, device=device).tril(diagonal=0)
             attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
             attn_bias.to(query.dtype)
 
         if attn_mask is not None:
-            raise Exception("attn_mask is not supported")
             if attn_mask.dtype == torch.bool:
-                attn_mask.masked_fill_(attn_mask.logical_not(), float("-inf"))
+                attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
             else:
                 attn_bias += attn_mask
 
         # print("query @ key.transpose(-2, -1)", query.shape, key.transpose(-2, -1).shape)
-        attn_weight = self.mat_mul(query, key.transpose(-2, -1))
+
+        attn_weight = self.mat_mul(query, key.transpose(-2, -1)) # [ bs, num_heads, target_seq_len, source_seq_len ]
         attn_weight = self.mul_const(attn_weight, scale_factor)
         attn_weight = self.add_const(attn_weight, attn_bias)
         attn_weight = self.softmax(attn_weight)
         attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
 
-        return self.mat_mul(attn_weight, value)
+        return self.mat_mul(attn_weight, value) # # [ bs, num_heads, target_seq_len, value_dim ]
 
 
 

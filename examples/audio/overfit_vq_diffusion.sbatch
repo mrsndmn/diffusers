@@ -2,7 +2,7 @@
 #SBATCH --job-name="overfit"
 #SBATCH --ntasks=1              # Количество MPI процессов
 #SBATCH --ntasks-per-node=1     # Количество процессов на один узел
-#SBATCH --cpus-per-task=4       # Количество ядер CPU, выделенных для одного процесса
+#SBATCH --cpus-per-task=10       # Количество ядер CPU, выделенных для одного процесса
 #SBATCH --gpus-per-node=2       # Количество GPU на один узел
 #SBATCH -C type_e_debug
 #SBATCH --time-min=1400
