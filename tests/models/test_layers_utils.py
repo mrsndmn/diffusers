@@ -456,6 +456,82 @@ class Transformer2DModelTests(unittest.TestCase):
         expected_slice = torch.tensor([-1.7648, -1.0241, -2.0985, -1.8035, -1.6404, -1.2098], device=torch_device)
         assert torch.allclose(output_slice.flatten(), expected_slice, atol=1e-3)
 
+    def test_spatial_transformer_discrete_single_timestemp(self):
+        timestep = torch.tensor(0)
+        self._test_spatial_transformer_discrete_timestemp(timestep)
+
+    def test_spatial_transformer_discrete_timestemp_batch(self):
+        timestep = torch.randint(100, [3])
+        self._test_spatial_transformer_discrete_timestemp(timestep)
+
+
+    def _test_spatial_transformer_discrete_timestemp(self, timestep):
+        torch.manual_seed(0)
+        backend_manual_seed(torch_device, 0)
+
+        num_embed = 5
+        num_ada_norm_embeddings = 100
+
+        batch_size = 3
+        if len(timestep.shape) > 0:
+            assert timestep.shape[0] == batch_size, f"timestep batch size must match sample batch size={batch_size}"
+
+        sample = torch.randint(0, num_embed, (batch_size, 32)).to(torch_device)
+        spatial_transformer_block = (
+            Transformer2DModel(
+                num_attention_heads=1,
+                attention_head_dim=32,
+                num_vector_embeds=num_embed,
+                num_embeds_ada_norm=num_ada_norm_embeddings,
+                sample_size=16,
+            )
+            .to(torch_device)
+            .eval()
+        )
+
+        assert spatial_transformer_block.transformer_blocks[0].use_ada_layer_norm, 'use_ada_layer_norm enabled'
+
+        with torch.no_grad():
+            attention_scores = spatial_transformer_block(sample, timestep=timestep).sample
+
+        assert attention_scores.shape == (batch_size, num_embed - 1, 32)
+
+    def encodec_transformer_model(self):
+        height = 4
+        width = 128
+        attention_head_dim = height * width
+        num_embed = 1024
+        NUM_TRAIN_TIMESTEPS = 1000
+        model_kwargs = {
+            "attention_bias": True,
+            "cross_attention_dim": None, # no cross attention for unconditional generation yet
+            "attention_head_dim": attention_head_dim,
+            "num_attention_heads": 1,
+            "num_vector_embeds": num_embed,
+            "num_embeds_ada_norm": NUM_TRAIN_TIMESTEPS,
+            "norm_num_groups": 32,
+            "sample_size": width,
+            "activation_fn": "geglu-approximate",
+        }
+
+        model = Transformer2DModel(**model_kwargs).to(torch_device).eval()
+        assert model.is_input_continuous == False, 'transformer is discrete'
+
+        return model
+
+    def test_encodec_transformer(self):
+
+        model = self.encodec_transformer_model()
+
+        batch_size = 3
+        sample = torch.randint(0, model.num_vector_embeds, (batch_size, model.width)).to(torch_device)
+        timesteps = torch.randint(0, 100, (batch_size,))
+
+        sample = model.forward(sample, timestep=timesteps).sample
+
+        assert sample.shape == (batch_size, model.num_vector_embeds - 1, model.width)
+
+
     def test_spatial_transformer_default_norm_layers(self):
         spatial_transformer_block = Transformer2DModel(num_attention_heads=1, attention_head_dim=32, in_channels=32)
 

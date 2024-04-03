@@ -1,0 +1,5 @@
+experiment_name: "loss_ablation_no_auxilairy_loss_q_posterior_q_x_0_detached_one_hot"
+auxiliary_loss_weight: 0.0
+kl_loss_weight: 0.1
+decoder_nll_loss_weight: 1.0
+timesteps_sampling: "uniform"

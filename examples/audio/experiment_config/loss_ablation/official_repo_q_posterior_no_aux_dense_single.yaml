@@ -1,0 +1,10 @@
+experiment_name: "q_posterior_official_repo_no_auxiliary_loss_norm_q_probas_timesteps_importance_sampling_transitioning_matricies_plus_eye_single_dense"
+# q_posterior_version: Q_POSTERIOR_VERSION_OFFICIAL_REPO
+auxiliary_loss_weight: 0.00
+kl_loss_weight: 1.0
+decoder_nll_loss_weight: 1.0
+timesteps_sampling: importance
+noise_scheduler_q_transition_martices_path: "./Q_transitioning_normed.pth"
+noise_scheduler_q_transition_cummulative_martices_path: "./Q_transitioning_cumulative_norm.pth"
+noise_scheduler_q_transition_transposed_martices_path: "./Q_transitioning_normed.pth"
+noise_scheduler_q_transition_transposed_cummulative_martices_path: "./Q_transitioning_cumulative_norm.pth"

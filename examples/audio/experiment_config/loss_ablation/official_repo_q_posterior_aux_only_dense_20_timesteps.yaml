@@ -1,0 +1,12 @@
+experiment_name: "q_posterior_official_repo_aux_only_dense_importance_sampling_20_timesteps"
+# q_posterior_version: Q_POSTERIOR_VERSION_OFFICIAL_REPO
+auxiliary_loss_weight: 1.0
+kl_loss_weight: 0.0
+decoder_nll_loss_weight: 0.0
+timesteps_sampling: importance
+num_train_timesteps: 20
+noise_scheduler: dense_trained_dummy_q_posterior
+noise_scheduler_q_transition_martices_path: "./Q_transitioning_normed_20_timesteps.pth"
+noise_scheduler_q_transition_cummulative_martices_path: "./Q_transitioning_cumulative_norm_20_timesteps.pth"
+noise_scheduler_q_transition_transposed_martices_path: "./Q_transitioning_normed_20_timesteps.pth"
+noise_scheduler_q_transition_transposed_cummulative_martices_path: "./Q_transitioning_cumulative_norm_20_timesteps.pth"

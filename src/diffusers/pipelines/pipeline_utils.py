@@ -127,6 +127,15 @@ class ImagePipelineOutput(BaseOutput):
 
 
 @dataclass
+class AudioCodesPipelineOutput(BaseOutput):
+    # # [ bs, out_channels ]
+    audio_codes: List[np.ndarray]
+    audio_values: List[np.ndarray]
+    self_attentions_sum_norm: List[List[torch.Tensor]]
+    cross_attentions_sum_norm: List[List[torch.Tensor]]
+
+
+@dataclass
 class AudioPipelineOutput(BaseOutput):
     """
     Output class for audio pipelines.
@@ -1184,6 +1193,8 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
         passed_pipe_kwargs = {k: kwargs.pop(k) for k in optional_kwargs if k in kwargs}
 
         init_dict, unused_kwargs, _ = pipeline_class.extract_init_dict(config_dict, **kwargs)
+        print("init_dict", init_dict)
+        print("unused_kwargs", unused_kwargs)
 
         # define init kwargs and make sure that optional component modules are filtered out
         init_kwargs = {
@@ -1356,7 +1367,7 @@ class DiffusionPipeline(ConfigMixin, PushToHubMixin):
         elif len(missing_modules) > 0:
             passed_modules = set(list(init_kwargs.keys()) + list(passed_class_obj.keys())) - optional_kwargs
             raise ValueError(
-                f"Pipeline {pipeline_class} expected {expected_modules}, but only {passed_modules} were passed."
+                f"Pipeline {pipeline_class} expected {expected_modules}, but only {passed_modules} were passed. Missing modules: {missing_modules}"
             )
 
         # 8. Instantiate the pipeline

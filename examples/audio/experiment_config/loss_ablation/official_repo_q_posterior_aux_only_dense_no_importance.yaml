@@ -1,0 +1,7 @@
+experiment_name: "q_posterior_official_repo_aux_only_timesteps_transitioning_matricies_plus_eye_dummy_q_posterior_fix_force_no_old_loss_but_with_forward_old_loss_no_importance_sampling"
+# q_posterior_version: Q_POSTERIOR_VERSION_OFFICIAL_REPO
+auxiliary_loss_weight: 1.0
+kl_loss_weight: 0.0
+decoder_nll_loss_weight: 0.0
+timesteps_sampling: uniform
+noise_scheduler: dense_trained_dummy_q_posterior

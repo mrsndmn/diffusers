@@ -24,6 +24,7 @@ from ..utils import is_torch_version
 from .activations import get_activation
 from .embeddings import CombinedTimestepLabelEmbeddings, PixArtAlphaCombinedTimestepSizeEmbeddings
 
+from lrp.mul import Mul
 
 class AdaLayerNorm(nn.Module):
     r"""
@@ -40,11 +41,22 @@ class AdaLayerNorm(nn.Module):
         self.silu = nn.SiLU()
         self.linear = nn.Linear(embedding_dim, embedding_dim * 2)
         self.norm = nn.LayerNorm(embedding_dim, elementwise_affine=False)
+        self.mul = Mul()
 
     def forward(self, x: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
-        emb = self.linear(self.silu(self.emb(timestep)))
-        scale, shift = torch.chunk(emb, 2)
-        x = self.norm(x) * (1 + scale) + shift
+        # x ~ [ bs, ... ]
+        # timestep ~ [ bs ]
+        if len(timestep.shape) == 0:
+            timestep = timestep.unsqueeze(0) # crutch broadbast to batch size if timestep is zero sized tensor
+
+        emb = self.linear(self.silu(self.emb(timestep))) # [ bs, embedding_dim ]
+        emb = emb.unsqueeze(1) # [ bs, 1, embedding_dim ] # broadcast for num pixels
+        # print("emb", emb.shape)
+        scale, shift = torch.chunk(emb, 2, dim=-1)
+        # print("scale", scale.shape, "shift", shift.shape)
+        x_norm = self.norm(x) # [ bs, num_pixels, embedding_dim ]
+        # print("x_norm", x_norm.shape)
+        x = self.mul(x_norm, (1 + scale) + shift)
         return x
 
 

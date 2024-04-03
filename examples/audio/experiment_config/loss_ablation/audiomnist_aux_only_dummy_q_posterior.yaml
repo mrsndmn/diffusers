@@ -1,0 +1,13 @@
+experiment_name: "audiomnist_aux_only_dummy_q_posterior"
+auxiliary_loss_weight: 1.0
+kl_loss_weight: 0.0
+decoder_nll_loss_weight: 0.0
+
+noise_scheduler: optimized_masked_uniform_dummy_q_posterior
+sample_size: 256
+
+train_batch_size: 25
+lr_warmup_steps: 10000
+learning_rate: 0.0001
+save_image_epochs: 25
+save_model_epochs: 25

@@ -18,7 +18,10 @@ import unittest
 import numpy as np
 import torch
 
-from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel
+from transformers import EncodecModel, AutoProcessor, DefaultDataCollator
+
+from diffusers.pipelines.ddpm.pipeline_ddpm import DDPMEncodecCodebookPipeline
+from diffusers import DDPMPipeline, DDPMScheduler, UNet2DModel, UNet1DModel
 from diffusers.utils.testing_utils import enable_full_determinism, require_torch_gpu, slow, torch_device
 
 
@@ -86,6 +89,51 @@ class DDPMPipelineFastTests(unittest.TestCase):
         assert image.shape == (1, 32, 32, 3)
         tolerance = 1e-2 if torch_device != "mps" else 3e-2
         assert np.abs(image_slice.flatten() - image_eps_slice.flatten()).max() < tolerance
+
+
+class DDPMEncodecCodebookPipelineTests(unittest.TestCase):
+    @property
+    def dummy_uncond_unet(self):
+        torch.manual_seed(0)
+        model = UNet1DModel(
+            sample_size=256,
+            in_channels=128,
+            extra_in_channels=16,
+            out_channels=128,
+            layers_per_block=2,  # how many ResNet layers to use per UNet block
+            block_out_channels=(256, 512, 1024),  # the number of output channels for each UNet block
+            down_block_types=(
+                "DownBlock1DNoSkip",
+                "DownBlock1D",
+                "AttnDownBlock1D",
+            ),
+            mid_block_type='UNetMidBlock1D',
+            up_block_types=(
+                "AttnUpBlock1D",
+                "UpBlock1D",
+                "UpBlock1DNoSkip",
+            ),
+            out_block_type='OutConv1DBlock',
+            act_fn='silu',
+        )
+        return model
+
+    def test_fast_inference(self):
+        device = "cpu"
+        unet = self.dummy_uncond_unet
+        scheduler = DDPMScheduler()
+        encodec_model_name = "facebook/encodec_24khz"
+
+        encodec_model = EncodecModel.from_pretrained(encodec_model_name)
+
+        ddpm = DDPMEncodecCodebookPipeline(unet=unet, scheduler=scheduler, encodec_model=encodec_model)
+        ddpm.to(device)
+        ddpm.set_progress_bar_config(disable=None)
+
+        generator = torch.Generator(device=device).manual_seed(0)
+        audio_codes = ddpm(generator=generator, num_inference_steps=2, output_type="numpy").audio_codes
+
+        assert audio_codes.shape == torch.Size([1, unet.sample_size])
 
 
 @slow

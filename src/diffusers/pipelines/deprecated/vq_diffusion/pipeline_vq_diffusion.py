@@ -15,13 +15,18 @@
 from typing import Callable, List, Optional, Tuple, Union
 
 import torch
-from transformers import CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextModel, CLIPTokenizer, EncodecModel, AutoTokenizer
+
+from diffusers.models.transformer_2d import Transformer2DModelOutput
 
 from ....configuration_utils import ConfigMixin, register_to_config
 from ....models import ModelMixin, Transformer2DModel, VQModel
-from ....schedulers import VQDiffusionScheduler
+from ....schedulers.scheduling_vq_diffusion import VQDiffusionScheduler
 from ....utils import logging
-from ...pipeline_utils import DiffusionPipeline, ImagePipelineOutput
+from ...pipeline_utils import AudioCodesPipelineOutput, DiffusionPipeline, ImagePipelineOutput
+
+from lrp.functional.integration import convert_module as lrp_convert_module
+from lrp.functional.integration import register_lrp_hooks
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -47,6 +52,454 @@ class LearnedClassifierFreeSamplingEmbeddings(ModelMixin, ConfigMixin):
             embeddings = None
 
         self.embeddings = torch.nn.Parameter(embeddings)
+
+class VQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
+
+    encodec: EncodecModel
+    clip_tokenizer: AutoTokenizer
+    clip_text_model: CLIPTextModel
+    transformer: Transformer2DModel
+    scheduler: VQDiffusionScheduler
+    # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings
+
+    def __init__(
+        self,
+        encodec: VQModel,
+        clip_tokenizer: AutoTokenizer,
+        clip_text_model: CLIPTextModel,
+        transformer: Transformer2DModel,
+        scheduler: VQDiffusionScheduler,
+        # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings,
+    ):
+        super().__init__()
+
+        self.register_modules(
+            encodec=encodec,
+            clip_tokenizer=clip_tokenizer,
+            clip_text_model=clip_text_model,
+            transformer=transformer,
+            scheduler=scheduler,
+            # learned_classifier_free_sampling_embeddings=learned_classifier_free_sampling_embeddings,
+        )
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        num_inference_steps: int = 100,
+        truncation_rate: float = 1.0,
+        num_generated_audios: int = 1,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.FloatTensor] = None,
+        text_condition: Optional[List[str]] = None,
+        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback_steps: int = 1,
+        scheduler_step_with_gumbel_noised = True,
+        scheduler_step_no_q_posterior=False,
+        bandwidth=None,
+        start_timestep=None,
+        clip_input_ids=None,
+        clip_attention_mask=None,
+    ) -> Union[AudioCodesPipelineOutput, Tuple]:
+
+        assert bandwidth is not None, "bandwidth must be setup"
+
+        batch_size = num_generated_audios
+
+        if (callback_steps is None) or (
+            callback_steps is not None and (not isinstance(callback_steps, int) or callback_steps <= 0)
+        ):
+            raise ValueError(
+                f"`callback_steps` has to be a positive integer but is {callback_steps} of type"
+                f" {type(callback_steps)}."
+            )
+
+        # get the initial completely masked latents unless the user supplied it
+
+        latents_shape = (batch_size, self.transformer.width)
+        if latents is None:
+            # mask_class = self.transformer.num_vector_embeds - 1
+            # latents = torch.full(latents_shape, mask_class).to(self.transformer.device)
+
+            BANDWIDTH = 3.0
+            latents = self.scheduler.generate_absolute_noise(
+                latents_shape,
+                encodec_model=self.encodec,
+                bandwidth=BANDWIDTH,
+                device=self.transformer.device,
+            )
+        else:
+            if latents.shape != latents_shape:
+                raise ValueError(f"Unexpected latents shape, got {latents.shape}, expected {latents_shape}")
+            if (latents < 0).any() or (latents >= self.transformer.num_vector_embeds).any():
+                raise ValueError(
+                    "Unexpected latents value(s). All latents be valid embedding indices i.e. in the range 0,"
+                    f" {self.transformer.num_vector_embeds - 1} (inclusive)."
+                )
+            latents = latents.to(self.device)
+
+        # set timesteps
+        if self.scheduler.num_train_timesteps != num_inference_steps:
+            self.scheduler.set_timesteps(num_inference_steps, device=self.transformer.device)
+
+        timesteps_tensor = self.scheduler.timesteps.to(self.transformer.device)
+
+        if start_timestep is not None:
+            timesteps_tensor = timesteps_tensor[-start_timestep:]
+
+        print("timesteps_tensor",  timesteps_tensor)
+
+        sample = latents
+
+        encoder_hidden_states = None
+        if text_condition is not None:
+            clip_inputs         = self.clip_tokenizer(text_condition, padding=True, return_tensors="pt")
+            clip_input_ids      = clip_inputs['input_ids'].to(self.clip_text_model.device)
+            clip_attention_mask = clip_inputs['attention_mask'].to(self.clip_text_model.device)
+        else:
+            assert clip_input_ids      is not None, f'clip_input_ids is required while text_condition is None'
+            assert clip_attention_mask is not None, f'clip_attention_mask is required while text_condition is None'
+
+        # clip_attention_mask
+        print("clip_attention_mask.dtype", clip_attention_mask.dtype)
+        clip_attention_mask = clip_attention_mask.bool()
+        clip_outputs = self.clip_text_model(input_ids=clip_input_ids, attention_mask=clip_attention_mask)
+        encoder_hidden_states = clip_outputs.last_hidden_state
+
+        assert encoder_hidden_states.shape[0] == sample.shape[0], "batch dim of sample and of text condition does't match"
+
+        cross_attentions_sum_norm_list = []
+        self_attentions_sum_norm_list = []
+        for i, t in enumerate(self.progress_bar(timesteps_tensor)):
+            # expand the sample if we are doing classifier free guidance
+            latent_model_input = sample
+
+            # predict the un-noised image
+            # model_output == `log_p_x_0`
+            print("hidden_states", latent_model_input.shape, latent_model_input.dtype)
+            print("encoder_hidden_states", encoder_hidden_states.shape, encoder_hidden_states.dtype)
+            print("timestep", t.shape, t.dtype, t)
+            transformer_output: Transformer2DModelOutput = self.transformer(
+                hidden_states=latent_model_input,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=clip_attention_mask,
+                timestep=t,
+            )
+
+            model_output = transformer_output.sample
+
+            cross_attentions_sum_norm_list.append(transformer_output.cross_attentions_sum_norm)
+            self_attentions_sum_norm_list.append(transformer_output.self_attentions_sum_norm)
+
+            print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
+
+            model_output = self.truncate(model_output, truncation_rate)
+
+            # remove `log(0)`'s (`-inf`s)
+            model_output = model_output.clamp(-70)
+
+            # compute the previous noisy sample x_t -> x_t-1
+            sample = self.scheduler.step(
+                model_output, timestep=t, sample=sample,
+                generator=generator,
+                with_gumbel_noised=scheduler_step_with_gumbel_noised,
+                no_q_posterior=scheduler_step_no_q_posterior,
+            ).prev_sample
+            print("sample.shape", sample.shape)
+
+            # call the callback, if provided
+            if callback is not None and i % callback_steps == 0:
+                callback(i, t, sample)
+
+        print("sample.shape", sample.shape)
+
+        audio_codes = sample
+        num_quantizers = self.encodec.quantizer.get_num_quantizers_for_bandwidth(bandwidth=bandwidth)
+        # assert num_quantizers == 4, "temporary test assert"
+
+        audio_codes = audio_codes.reshape(audio_codes.shape[0], -1, num_quantizers)
+        audio_codes = audio_codes.permute(0, 2, 1)
+        print("audio_codes reshaped", audio_codes.shape)
+
+        all_audio_values = []
+        for audio_code_i in range(audio_codes.shape[0]):
+            audio_code = audio_codes[audio_code_i].unsqueeze(0).unsqueeze(1)
+
+            # print("audio_codes", audio_code.shape)
+
+            padding_mask = None
+            audio_values = self.encodec.decode(audio_code, [None], padding_mask, return_dict=True).audio_values
+
+            all_audio_values.append(audio_values)
+        all_audio_values = torch.cat(all_audio_values, dim=0)
+
+        return AudioCodesPipelineOutput(
+            audio_codes=audio_codes,
+            audio_values=all_audio_values,
+            cross_attentions_sum_norm=cross_attentions_sum_norm_list,
+            self_attentions_sum_norm=self_attentions_sum_norm_list,
+        )
+
+    def truncate(self, log_p_x_0: torch.FloatTensor, truncation_rate: float) -> torch.FloatTensor:
+        """
+        Truncates `log_p_x_0` such that for each column vector, the total cumulative probability is `truncation_rate`
+        The lowest probabilities that would increase the cumulative probability above `truncation_rate` are set to
+        zero.
+        """
+        sorted_log_p_x_0, indices = torch.sort(log_p_x_0, 1, descending=True)
+        sorted_p_x_0 = torch.exp(sorted_log_p_x_0)
+        keep_mask = sorted_p_x_0.cumsum(dim=1) < truncation_rate
+
+        # Ensure that at least the largest probability is not zeroed out
+        all_true = torch.full_like(keep_mask[:, 0:1, :], True)
+        keep_mask = torch.cat((all_true, keep_mask), dim=1)
+        keep_mask = keep_mask[:, :-1, :]
+
+        keep_mask = keep_mask.gather(1, indices.argsort(1))
+
+        rv = log_p_x_0.clone()
+
+        rv[~keep_mask] = -torch.inf  # -inf = log(0)
+
+        return rv
+
+
+class LRPVQDiffusionAudioTextConditionalPipeline(DiffusionPipeline):
+
+    encodec: EncodecModel
+    clip_tokenizer: AutoTokenizer
+    clip_text_model: CLIPTextModel
+    transformer: Transformer2DModel
+    scheduler: VQDiffusionScheduler
+    # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings
+
+    def __init__(
+        self,
+        encodec: VQModel,
+        clip_tokenizer: AutoTokenizer,
+        clip_text_model: CLIPTextModel,
+        transformer: Transformer2DModel,
+        scheduler: VQDiffusionScheduler,
+        # learned_classifier_free_sampling_embeddings: LearnedClassifierFreeSamplingEmbeddings,
+    ):
+        super().__init__()
+
+        self.register_modules(
+            encodec=encodec,
+            clip_tokenizer=clip_tokenizer,
+            clip_text_model=clip_text_model,
+            transformer=transformer,
+            scheduler=scheduler,
+            # learned_classifier_free_sampling_embeddings=learned_classifier_free_sampling_embeddings,
+        )
+
+    def __call__(
+        self,
+        num_inference_steps: int = 100,
+        truncation_rate: float = 1.0,
+        num_generated_audios: int = 1,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        latents: Optional[torch.FloatTensor] = None,
+        text_condition: Optional[List[str]] = None,
+        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback_steps: int = 1,
+        scheduler_step_with_gumbel_noised = True,
+        scheduler_step_no_q_posterior=False,
+        bandwidth=None,
+        start_timestep=None,
+        clip_input_ids=None,
+        clip_attention_mask=None,
+    ) -> Union[AudioCodesPipelineOutput, Tuple]:
+
+        assert bandwidth is not None, "bandwidth must be setup"
+
+        batch_size = num_generated_audios
+
+        if (callback_steps is None) or (
+            callback_steps is not None and (not isinstance(callback_steps, int) or callback_steps <= 0)
+        ):
+            raise ValueError(
+                f"`callback_steps` has to be a positive integer but is {callback_steps} of type"
+                f" {type(callback_steps)}."
+            )
+
+        # get the initial completely masked latents unless the user supplied it
+
+        # inplace converts_module
+        lrp_convert_module(self.transformer)
+        register_lrp_hooks(self.transformer)
+
+
+        latents_shape = (batch_size, self.transformer.width)
+        if latents is None:
+            # mask_class = self.transformer.num_vector_embeds - 1
+            # latents = torch.full(latents_shape, mask_class).to(self.transformer.device)
+
+            BANDWIDTH = 3.0
+            latents = self.scheduler.generate_absolute_noise(
+                latents_shape,
+                encodec_model=self.encodec,
+                bandwidth=BANDWIDTH,
+                device=self.transformer.device,
+            )
+        else:
+            if latents.shape != latents_shape:
+                raise ValueError(f"Unexpected latents shape, got {latents.shape}, expected {latents_shape}")
+            if (latents < 0).any() or (latents >= self.transformer.num_vector_embeds).any():
+                raise ValueError(
+                    "Unexpected latents value(s). All latents be valid embedding indices i.e. in the range 0,"
+                    f" {self.transformer.num_vector_embeds - 1} (inclusive)."
+                )
+            latents = latents.to(self.device)
+
+        # set timesteps
+        if self.scheduler.num_train_timesteps != num_inference_steps:
+            self.scheduler.set_timesteps(num_inference_steps, device=self.transformer.device)
+
+        timesteps_tensor = self.scheduler.timesteps.to(self.transformer.device)
+
+        if start_timestep is not None:
+            timesteps_tensor = timesteps_tensor[-start_timestep:]
+
+        print("timesteps_tensor",  timesteps_tensor)
+
+        sample = latents
+
+        encoder_hidden_states = None
+        if text_condition is not None:
+            clip_inputs         = self.clip_tokenizer(text_condition, padding=True, return_tensors="pt")
+            clip_input_ids      = clip_inputs['input_ids'].to(self.clip_text_model.device)
+            clip_attention_mask = clip_inputs['attention_mask'].to(self.clip_text_model.device)
+        else:
+            assert clip_input_ids      is not None, f'clip_input_ids is required while text_condition is None'
+            assert clip_attention_mask is not None, f'clip_attention_mask is required while text_condition is None'
+
+        with torch.no_grad():
+            clip_outputs = self.clip_text_model(input_ids=clip_input_ids, attention_mask=clip_attention_mask)
+            encoder_hidden_states = clip_outputs.last_hidden_state
+
+        encoder_hidden_states = encoder_hidden_states.detach()
+        encoder_hidden_states.requires_grad = True
+
+        assert encoder_hidden_states.shape[0] == sample.shape[0], "batch dim of sample and of text condition does't match"
+
+        cross_attentions_sum_norm_list = []
+        self_attentions_sum_norm_list = []
+
+        condition_sequence_relevances = []
+        # source_sequence_relevances = [] # will be received from model hook
+        # timesteps_relevances = [] # todo
+
+        timesteps_for_lrp = set([99, 98, 75, 50, 25, 1, 0])
+
+        for i, t in enumerate(self.progress_bar(timesteps_tensor)):
+            # expand the sample if we are doing classifier free guidance
+            latent_model_input = sample
+
+            # predict the un-noised image
+            # model_output == `log_p_x_0`
+            print("hidden_states", latent_model_input.shape, latent_model_input.dtype)
+            print("encoder_hidden_states", encoder_hidden_states.shape, encoder_hidden_states.dtype)
+            print("timestep", t.shape, t.dtype, t)
+            transformer_output: Transformer2DModelOutput = self.transformer(
+                hidden_states=latent_model_input,
+                encoder_hidden_states=encoder_hidden_states,
+                timestep=t,
+            )
+
+            model_output = transformer_output.sample
+
+            print(f"t={t} timesteps_for_lrp={timesteps_for_lrp}, check_t=", t.item() in timesteps_for_lrp)
+            if t.item() in timesteps_for_lrp:
+                lrp_initial = torch.ones_like(model_output) / model_output.numel()
+                print("Going to ocmpute LRP backward!", lrp_initial.sum())
+                model_output.backward( lrp_initial )
+
+                print(f"[t={t}] LRP encoder_hidden_states.grad.sum() ", encoder_hidden_states.grad.sum())
+                print(f"[t={t}] LRP sample_grad.sum()                ", self.transformer.source_sequence_relevances[-1].sum())
+
+                condition_sequence_relevances.append(encoder_hidden_states.grad)
+                encoder_hidden_states.grad = None
+                self.transformer.zero_grad()
+
+            cross_attentions_sum_norm_list.append(transformer_output.cross_attentions_sum_norm)
+            self_attentions_sum_norm_list.append(transformer_output.self_attentions_sum_norm)
+
+            print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
+
+            model_output = self.truncate(model_output, truncation_rate)
+
+            # remove `log(0)`'s (`-inf`s)
+            model_output = model_output.clamp(-70)
+
+            # compute the previous noisy sample x_t -> x_t-1
+            sample = self.scheduler.step(
+                model_output, timestep=t, sample=sample,
+                generator=generator,
+                with_gumbel_noised=scheduler_step_with_gumbel_noised,
+                no_q_posterior=scheduler_step_no_q_posterior,
+            ).prev_sample
+            print("sample.shape", sample.shape)
+
+            # call the callback, if provided
+            if callback is not None and i % callback_steps == 0:
+                callback(i, t, sample)
+
+        print("sample.shape", sample.shape)
+
+        source_sequence_relevances = self.transformer.source_sequence_relevances
+        print("len(source_sequence_relevances)", len(source_sequence_relevances))
+        print("len(condition_sequence_relevances)", len(condition_sequence_relevances))
+
+        audio_codes = sample
+        num_quantizers = self.encodec.quantizer.get_num_quantizers_for_bandwidth(bandwidth=bandwidth)
+        # assert num_quantizers == 4, "temporary test assert"
+
+        audio_codes = audio_codes.reshape(audio_codes.shape[0], -1, num_quantizers)
+        audio_codes = audio_codes.permute(0, 2, 1)
+        print("audio_codes reshaped", audio_codes.shape)
+
+        all_audio_values = []
+        for audio_code_i in range(audio_codes.shape[0]):
+            audio_code = audio_codes[audio_code_i].unsqueeze(0).unsqueeze(1)
+
+            # print("audio_codes", audio_code.shape)
+
+            padding_mask = None
+            audio_values = self.encodec.decode(audio_code, [None], padding_mask, return_dict=True).audio_values
+
+            all_audio_values.append(audio_values)
+        all_audio_values = torch.cat(all_audio_values, dim=0)
+
+        return AudioCodesPipelineOutput(
+            audio_codes=audio_codes,
+            audio_values=all_audio_values,
+            cross_attentions_sum_norm=cross_attentions_sum_norm_list,
+            self_attentions_sum_norm=self_attentions_sum_norm_list,
+        )
+
+    def truncate(self, log_p_x_0: torch.FloatTensor, truncation_rate: float) -> torch.FloatTensor:
+        """
+        Truncates `log_p_x_0` such that for each column vector, the total cumulative probability is `truncation_rate`
+        The lowest probabilities that would increase the cumulative probability above `truncation_rate` are set to
+        zero.
+        """
+        sorted_log_p_x_0, indices = torch.sort(log_p_x_0, 1, descending=True)
+        sorted_p_x_0 = torch.exp(sorted_log_p_x_0)
+        keep_mask = sorted_p_x_0.cumsum(dim=1) < truncation_rate
+
+        # Ensure that at least the largest probability is not zeroed out
+        all_true = torch.full_like(keep_mask[:, 0:1, :], True)
+        keep_mask = torch.cat((all_true, keep_mask), dim=1)
+        keep_mask = keep_mask[:, :-1, :]
+
+        keep_mask = keep_mask.gather(1, indices.argsort(1))
+
+        rv = log_p_x_0.clone()
+
+        rv[~keep_mask] = -torch.inf  # -inf = log(0)
+
+        return rv
+
 
 
 class VQDiffusionPipeline(DiffusionPipeline):
@@ -267,6 +720,7 @@ class VQDiffusionPipeline(DiffusionPipeline):
             # predict the un-noised image
             # model_output == `log_p_x_0`
             model_output = self.transformer(latent_model_input, encoder_hidden_states=prompt_embeds, timestep=t).sample
+            print("model_output.shape", model_output.shape, "model_output.dtype", model_output.dtype)
 
             if do_classifier_free_guidance:
                 model_output_uncond, model_output_text = model_output.chunk(2)

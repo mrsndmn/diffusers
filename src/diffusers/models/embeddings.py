@@ -354,7 +354,14 @@ class ImagePositionalEmbeddings(nn.Module):
         self.width_emb = nn.Embedding(self.width, embed_dim)
 
     def forward(self, index):
+
+        def debug_tensor(name, tens):
+            print(f"{name} [{tens.shape}] is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+
+
+        debug_tensor("pos embeddings index", index)
         emb = self.emb(index)
+        debug_tensor("pos embeddings emb", emb)
 
         height_emb = self.height_emb(torch.arange(self.height, device=index.device).view(1, self.height))
 
@@ -370,8 +377,11 @@ class ImagePositionalEmbeddings(nn.Module):
 
         # 1 x H x W x D -> 1 x L xD
         pos_emb = pos_emb.view(1, self.height * self.width, -1)
+        debug_tensor("pos embeddings pos_emb", pos_emb)
+        
 
         emb = emb + pos_emb[:, : emb.shape[1], :]
+        debug_tensor("pos embeddings result", emb)
 
         return emb
 

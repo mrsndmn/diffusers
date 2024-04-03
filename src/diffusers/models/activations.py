@@ -20,6 +20,8 @@ from torch import nn
 from ..utils import USE_PEFT_BACKEND
 from .lora import LoRACompatibleLinear
 
+from lrp.mul import Mul
+from lrp.mul_const import MulConst
 
 ACTIVATION_FUNCTIONS = {
     "swish": nn.SiLU(),
@@ -90,17 +92,19 @@ class GEGLU(nn.Module):
         linear_cls = LoRACompatibleLinear if not USE_PEFT_BACKEND else nn.Linear
 
         self.proj = linear_cls(dim_in, dim_out * 2, bias=bias)
+        self.nn_gelu = nn.GELU()
+        self.mul = Mul()
 
     def gelu(self, gate: torch.Tensor) -> torch.Tensor:
         if gate.device.type != "mps":
-            return F.gelu(gate)
+            return self.nn_gelu(gate)
         # mps: gelu is not implemented for float16
-        return F.gelu(gate.to(dtype=torch.float32)).to(dtype=gate.dtype)
+        return self.nn_gelu(gate.to(dtype=torch.float32)).to(dtype=gate.dtype)
 
     def forward(self, hidden_states, scale: float = 1.0):
         args = () if USE_PEFT_BACKEND else (scale,)
         hidden_states, gate = self.proj(hidden_states, *args).chunk(2, dim=-1)
-        return hidden_states * self.gelu(gate)
+        return self.mul(hidden_states, self.gelu(gate))
 
 
 class ApproximateGELU(nn.Module):
@@ -117,7 +121,9 @@ class ApproximateGELU(nn.Module):
     def __init__(self, dim_in: int, dim_out: int, bias: bool = True):
         super().__init__()
         self.proj = nn.Linear(dim_in, dim_out, bias=bias)
+        self.sigmoid = nn.Sigmoid()
+        self.mul_const = MulConst()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.proj(x)
-        return x * torch.sigmoid(1.702 * x)
+        return self.mul_const(x, self.sigmoid(self.mul_const(x, 1.702)))

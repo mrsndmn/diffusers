@@ -42,7 +42,7 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from yaml.loader import FullLoader
 
 from diffusers import Transformer2DModel, VQDiffusionPipeline, VQDiffusionScheduler, VQModel
-from diffusers.pipelines.vq_diffusion.pipeline_vq_diffusion import LearnedClassifierFreeSamplingEmbeddings
+from diffusers.pipelines.deprecated.vq_diffusion.pipeline_vq_diffusion import LearnedClassifierFreeSamplingEmbeddings
 
 
 try:

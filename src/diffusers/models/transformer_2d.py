@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import torch
 import torch.nn.functional as F
@@ -21,12 +21,13 @@ from torch import nn
 from ..configuration_utils import ConfigMixin, register_to_config
 from ..models.embeddings import ImagePositionalEmbeddings
 from ..utils import USE_PEFT_BACKEND, BaseOutput, deprecate, is_torch_version
-from .attention import BasicTransformerBlock
+from .attention import BasicTransformerBlock, BasicTransformerBlockOutput
 from .embeddings import PatchEmbed, PixArtAlphaTextProjection
 from .lora import LoRACompatibleConv, LoRACompatibleLinear
 from .modeling_utils import ModelMixin
 from .normalization import AdaLayerNormSingle
 
+from torch.nn.init import xavier_uniform_
 
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
@@ -40,6 +41,8 @@ class Transformer2DModelOutput(BaseOutput):
     """
 
     sample: torch.FloatTensor
+    self_attentions_sum_norm: torch.FloatTensor # [ transformer_blocks, *attention_dim ]
+    cross_attentions_sum_norm: torch.FloatTensor # [ transformer_blocks, *attention_dim ]
 
 
 class Transformer2DModel(ModelMixin, ConfigMixin):
@@ -85,6 +88,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         cross_attention_dim: Optional[int] = None,
         attention_bias: bool = False,
         sample_size: Optional[int] = None,
+        height: Optional[int] = None, # for assymetrical imiages (if (sample_size == width) != heigth)
         num_vector_embeds: Optional[int] = None,
         patch_size: Optional[int] = None,
         activation_fn: str = "geglu",
@@ -98,11 +102,16 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         norm_eps: float = 1e-5,
         attention_type: str = "default",
         caption_channels: int = None,
+        output_attentions: bool = False,
     ):
         super().__init__()
         self.use_linear_projection = use_linear_projection
         self.num_attention_heads = num_attention_heads
         self.attention_head_dim = attention_head_dim
+        self.output_attentions = output_attentions
+
+        # assert cross_attention_dim == attention_head_dim * num_attention_heads, f'cross_attention_dim must be equals to attention_head_dim * num_attention_heads ({attention_head_dim * num_attention_heads})'
+
         inner_dim = num_attention_heads * attention_head_dim
 
         conv_cls = nn.Conv2d if USE_PEFT_BACKEND else LoRACompatibleConv
@@ -154,7 +163,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             assert sample_size is not None, "Transformer2DModel over discrete input must provide sample_size"
             assert num_vector_embeds is not None, "Transformer2DModel over discrete input must provide num_embed"
 
-            self.height = sample_size
+            self.height = height if height is not None else sample_size
             self.width = sample_size
             self.num_vector_embeds = num_vector_embeds
             self.num_latent_pixels = self.height * self.width
@@ -199,6 +208,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     norm_elementwise_affine=norm_elementwise_affine,
                     norm_eps=norm_eps,
                     attention_type=attention_type,
+                    output_attentions=output_attentions,
                 )
                 for d in range(num_layers)
             ]
@@ -238,6 +248,25 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             self.caption_projection = PixArtAlphaTextProjection(in_features=caption_channels, hidden_size=inner_dim)
 
         self.gradient_checkpointing = False
+
+        self.softmax = nn.Softmax(dim=-1)
+        self.tensor_log = torch.log
+
+        self.init_weights()
+
+        return
+
+    def init_weights(self):
+        for module in self.modules():
+            if isinstance(module, (nn.Linear, nn.Embedding)):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+            elif isinstance(module, nn.LayerNorm) and module.elementwise_affine:
+                module.weight.data.fill_(1.0)
+                if module.bias is not None:
+                    module.bias.data.zero_()
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                module.bias.data.zero_()
+
 
     def _set_gradient_checkpointing(self, module, value=False):
         if hasattr(module, "gradient_checkpointing"):
@@ -319,6 +348,14 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         # Retrieve lora scale.
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
 
+        def debug_tensor(name, tens):
+            if tens is not None:
+                print(f"{name} ", tens.shape, "is nan", tens.isnan().any(), "min max", tens.min().item(), tens.max().item())
+
+        debug_tensor('transformer forward hidden_states', hidden_states)
+        debug_tensor('transformer forward encoder_hidden_states', encoder_hidden_states)
+        debug_tensor('transformer forward timestep', timestep)
+
         # 1. Input
         if self.is_input_continuous:
             batch, _, height, width = hidden_states.shape
@@ -358,12 +395,16 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     timestep, added_cond_kwargs, batch_size=batch_size, hidden_dtype=hidden_states.dtype
                 )
 
+        debug_tensor("hidden_states before blocks", hidden_states)
+
         # 2. Blocks
         if self.caption_projection is not None:
             batch_size = hidden_states.shape[0]
             encoder_hidden_states = self.caption_projection(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, hidden_states.shape[-1])
 
+        all_self_attentions_sum_norm = torch.tensor([0.0],  device=hidden_states.device)
+        all_cross_attentions_sum_norm = torch.tensor([0.0], device=hidden_states.device)
         for block in self.transformer_blocks:
             if self.training and self.gradient_checkpointing:
 
@@ -389,7 +430,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     **ckpt_kwargs,
                 )
             else:
-                hidden_states = block(
+                block_output = block(
                     hidden_states,
                     attention_mask=attention_mask,
                     encoder_hidden_states=encoder_hidden_states,
@@ -398,6 +439,15 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     cross_attention_kwargs=cross_attention_kwargs,
                     class_labels=class_labels,
                 )
+                if self.output_attentions:
+                    block_output: BasicTransformerBlockOutput
+                    all_self_attentions_sum_norm  += block_output.cross_attention.norm(2)
+                    all_cross_attentions_sum_norm += block_output.self_attention.norm(2)
+                    hidden_states = block_output.hidden_states
+                else:
+                    hidden_states = block_output
+
+        debug_tensor("hidden_states after blocks", hidden_states)
 
         # 3. Output
         if self.is_input_continuous:
@@ -424,7 +474,18 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             logits = logits.permute(0, 2, 1)
 
             # log(p(x_0))
-            output = F.log_softmax(logits.double(), dim=1).float()
+            if not str(logits.device).startswith("mps"):
+                logits = logits.double()
+
+            debug_tensor("hidden_states out", hidden_states)
+            debug_tensor("logits before logsotmax", logits)
+
+            # crutch for LRP softmax
+            logits_permuted = logits.permute(0, 2, 1)
+            output = self.tensor_log(self.softmax(logits_permuted))
+            output = output.permute(0, 2, 1) # restore transposed axis
+
+            # output = F.log_softmax(logits, dim=1).float()
 
         if self.is_input_patches:
             if self.config.norm_type != "ada_norm_single":
@@ -456,4 +517,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         if not return_dict:
             return (output,)
 
-        return Transformer2DModelOutput(sample=output)
+        return Transformer2DModelOutput(
+            sample=output,
+            self_attentions_sum_norm=all_self_attentions_sum_norm,
+            cross_attentions_sum_norm=all_cross_attentions_sum_norm,
+        )

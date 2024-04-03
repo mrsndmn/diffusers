@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import torch
@@ -24,6 +25,7 @@ from .attention_processor import Attention
 from .embeddings import SinusoidalPositionalEmbedding
 from .lora import LoRACompatibleLinear
 from .normalization import AdaLayerNorm, AdaLayerNormContinuous, AdaLayerNormZero, RMSNorm
+from lrp.residual import Residual as LRPResidual
 
 
 def _chunked_feed_forward(
@@ -93,6 +95,12 @@ class GatedSelfAttentionDense(nn.Module):
         return x
 
 
+@dataclass
+class BasicTransformerBlockOutput:
+    hidden_states: torch.Tensor
+    cross_attention: torch.Tensor
+    self_attention: torch.Tensor
+
 @maybe_allow_in_graph
 class BasicTransformerBlock(nn.Module):
     r"""
@@ -154,9 +162,11 @@ class BasicTransformerBlock(nn.Module):
         ff_inner_dim: Optional[int] = None,
         ff_bias: bool = True,
         attention_out_bias: bool = True,
+        output_attentions: bool = False,
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
+        self.output_attentions = output_attentions
 
         self.use_ada_layer_norm_zero = (num_embeds_ada_norm is not None) and norm_type == "ada_norm_zero"
         self.use_ada_layer_norm = (num_embeds_ada_norm is not None) and norm_type == "ada_norm"
@@ -276,6 +286,8 @@ class BasicTransformerBlock(nn.Module):
         self._chunk_size = None
         self._chunk_dim = 0
 
+        self.residual = LRPResidual()
+
     def set_chunk_feed_forward(self, chunk_size: Optional[int], dim: int = 0):
         # Sets chunk feed-forward
         self._chunk_size = chunk_size
@@ -296,7 +308,14 @@ class BasicTransformerBlock(nn.Module):
         # 0. Self-Attention
         batch_size = hidden_states.shape[0]
 
+        # print("self.use_ada_layer_norm", self.use_ada_layer_norm)
+        # print("self.use_ada_layer_norm_zero", self.use_ada_layer_norm_zero)
+        # print("self.use_layer_norm", self.use_layer_norm)
+        # print("self.use_ada_layer_norm_single", self.use_ada_layer_norm_single)
         if self.use_ada_layer_norm:
+            # print("hidden_states", hidden_states.shape, "timestep", timestep.shape)
+            # print("timestep", timestep)
+            # print("block self", self)
             norm_hidden_states = self.norm1(hidden_states, timestep)
         elif self.use_ada_layer_norm_zero:
             norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(
@@ -326,18 +345,18 @@ class BasicTransformerBlock(nn.Module):
         cross_attention_kwargs = cross_attention_kwargs.copy() if cross_attention_kwargs is not None else {}
         gligen_kwargs = cross_attention_kwargs.pop("gligen", None)
 
-        attn_output = self.attn1(
+        self_attention = self.attn1(
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states if self.only_cross_attention else None,
             attention_mask=attention_mask,
             **cross_attention_kwargs,
         )
         if self.use_ada_layer_norm_zero:
-            attn_output = gate_msa.unsqueeze(1) * attn_output
+            self_attention = gate_msa.unsqueeze(1) * self_attention
         elif self.use_ada_layer_norm_single:
-            attn_output = gate_msa * attn_output
+            self_attention = gate_msa * self_attention
 
-        hidden_states = attn_output + hidden_states
+        hidden_states = self.residual(self_attention, hidden_states)
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
 
@@ -346,6 +365,7 @@ class BasicTransformerBlock(nn.Module):
             hidden_states = self.fuser(hidden_states, gligen_kwargs["objs"])
 
         # 3. Cross-Attention
+        cross_attention = None
         if self.attn2 is not None:
             if self.use_ada_layer_norm:
                 norm_hidden_states = self.norm2(hidden_states, timestep)
@@ -363,13 +383,18 @@ class BasicTransformerBlock(nn.Module):
             if self.pos_embed is not None and self.use_ada_layer_norm_single is False:
                 norm_hidden_states = self.pos_embed(norm_hidden_states)
 
-            attn_output = self.attn2(
+            # print("self.attn2", self.attn2)
+            # print("norm_hidden_states", norm_hidden_states.shape)
+
+            cross_attention = self.attn2(
                 norm_hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
                 **cross_attention_kwargs,
             )
-            hidden_states = attn_output + hidden_states
+            # print("cross_attention", cross_attention.shape)
+            # print("hidden_states", hidden_states.shape)
+            hidden_states = self.residual(cross_attention, hidden_states)
 
         # 4. Feed-forward
         if self.use_ada_layer_norm_continuous:
@@ -397,9 +422,16 @@ class BasicTransformerBlock(nn.Module):
         elif self.use_ada_layer_norm_single:
             ff_output = gate_mlp * ff_output
 
-        hidden_states = ff_output + hidden_states
+        hidden_states = self.residual(ff_output, hidden_states)
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
+
+        if self.output_attentions:
+            return BasicTransformerBlockOutput(
+                hidden_states=hidden_states,
+                cross_attention=cross_attention,
+                self_attention=self_attention,
+            )
 
         return hidden_states
 
